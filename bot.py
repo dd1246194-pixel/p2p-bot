@@ -1,113 +1,237 @@
-[9/12/2026 6:56 AM] Se: import logging
-import sqlite3
+# type: ignore
+import os
+import logging
+from typing import Any
+from threading import Thread
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    filters,
+)
 
-# --- 1. CONFIGURATION ---
-BOT_TOKEN = "8048106014:AAHBx1WraAgYQNUdZBr0m1Dup1HdxwjWJNQ"
+app_web = Flask(__name__)
+
+@app_web.route('/')
+def home():
+    return "OKXETH P2P Bot is Alive and Running 24/7!", 200
+
+def run_flask():
+    app_web.run(host='0.0.0.0', port=8080)
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 7798227927
+RATE = 184
+TELEBIRR_NUMBER = "0900253321"
 
-logging.basicConfig(level=logging.INFO)
+AMOUNT, PAYMENT, SCREENSHOT, WALLET_ADDRESS = range(4)
 
-# --- 2. DATABASE SETUP ---
-def init_db():
-    conn = sqlite3.connect("p2p_bot.db")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            action TEXT,
-            amount TEXT,
-            status TEXT
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message:
+        await update.message.reply_text(
+            "👋 **Welcome to OKXETH P2P BOT!**\n\n"
+            "💱 የዛሬው የምንዛሬ ተመን፦ **1 USD = 184 Birr**\n\n"
+            "እባክዎን መግዛት የሚፈልጉትን የዶላር (USD) መጠን ያስገቡ፦\n"
+            "(ለምሳሌ፦ 10 ወይም 50)",
+            parse_mode="Markdown"
         )
-    ''')
-    conn.commit()
-    conn.close()
+    return AMOUNT
 
-init_db()
-
-# --- 3. HANDLERS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("💳 መግዛት (Buy)", callback_data="buy")],
-        [InlineKeyboardButton("💵 መሸጥ (Sell)", callback_data="sell")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("እንኳን ወደ P2P አገልግሎት በሰላም መጡ! ምን ማድረግ ይፈልጋሉ?", reply_markup=reply_markup)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data in ["buy", "sell"]:
-        context.user_data['action'] = query.data
-        await query.edit_message_text(f"እባክዎን የወሰኑትን የገንዘብ መጠን/አማውንት ያስገቡ፦")
-
-async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.text:
+        return AMOUNT
     text = update.message.text
-    
-    if 'action' in context.user_data:
-        action = context.user_data['action']
-        
-        # Save order to database
-        conn = sqlite3.connect("p2p_bot.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO orders (user_id, action, amount, status) VALUES (?, ?, ?, ?)",
-                       (user_id, action, text, "PENDING"))
-        order_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+    try:
+        usd_amount = float(text)
+        if usd_amount <= 0:
+            await update.message.reply_text("እባክዎን ከ 0 በላይ የሆነ ትክክለኛ ቁጥር ያስገቡ፦")
+            return AMOUNT
+        total_birr = usd_amount * RATE
+        if context.user_data is not None:
+            context.user_data['usd_amount'] = usd_amount
+            context.user_data['total_birr'] = total_birr
 
-        # Send to Admin for review
-        admin_keyboard = [
-            [InlineKeyboardButton("✅ አጽድቅ (Approve)", callback_data=f"approve_{order_id}_{user_id}")],
-            [InlineKeyboardButton("❌ ሰርዝ (Reject)", callback_data=f"reject_{order_id}_{user_id}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(admin_keyboard)
-        
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"🚨 አዲስ P2P ጥያቄ!\n\nOrder ID: #{order_id}\nUser ID: {user_id}\nዓይነት: {action.upper()}\nመጠን: {text}",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
+        keyboard = [[InlineKeyboardButton("📱 Only Telebirr", callback_data="telebirr")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        msg = (
+            f"📊 **የስሌት ማጠቃለያ**፦\n\n"
+            f"💵 የሚገዙት መጠን፦ **${usd_amount:,.2f} USD**\n"
+            f"💰 የሚከፍሉት ጠቅላላ ብር፦ **{total_birr:,.2f} ETB**\n\n"
+            f"እባክዎን የክፍያ አማራጭ ይምረጡ፦"
         )
-        
-        await update.message.reply_text("ጥያቄዎ ለአድሚን ተልኳል! አድሚኑ አረጋግጦ እስኪያጸድቀው ድረስ ትንሽ ይታገሱ።")
-        del context.user_data['action']
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        return PAYMENT
+    except ValueError:
+        await update.message.reply_text("እባክዎን ትክክለኛ ቁጥር ብቻ ያስገቡ (ለምሳሌ፦ 25)፦")
+        return AMOUNT
 
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def payment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    if not query:
+        return PAYMENT
     await query.answer()
-    
-    data = query.data.split("_")
-    action, order_id, user_id = data[0], data[1], data[2]
+    user_data = context.user_data or {}
+    total_birr = user_data.get('total_birr', 0)
+    usd_amount = user_data.get('usd_amount', 0)
 
-    conn = sqlite3.connect("p2p_bot.db")
-    cursor = conn.cursor()
+    msg = (
+        f"✅ **Telebirr ክፍያ መረጠዋል**\n\n"
+        f"💳 የሚከፍሉት መጠን፦ **{total_birr:,.2f} ETB** (ለ ${usd_amount:,.2f} USD)\n"
+        f"📞 የTelebirr ስልክ ቁጥር፦ `{TELEBIRR_NUMBER}`\n\n"
+        f"📌 **ትዕዛዝ**፦\n"
+        f"1. በላይ በተጠቀሰው ቁጥር **{total_birr:,.2f} ETB** በTelebirr ይላኩ።\n"
+        f"2. ክፍያውን እንደፈጸሙ **የደረሰኝ ስክሪንሹት (Screenshot)** ወይም ፎቶ በዚህ ይላኩ።"
+    )
+    if query.message and hasattr(query.message, 'reply_text'):
+        await getattr(query.message, 'reply_text')(msg, parse_mode="Markdown")
+    return SCREENSHOT
 
-    if action == "approve":
-        cursor.execute("UPDATE orders SET status = 'APPROVED' WHERE id = ?", (order_id,))
-        await context.bot.send_message(chat_id=user_id, text=f"✅ የጥያቄ ቁጥር #{order_id} ግብይትዎ ጸድቋል/ተጠናቋል!")
-        await query.edit_message_text(f"Order #{order_id} ጸድቋል።")
-    elif action == "reject":
-        cursor.execute("UPDATE orders SET status = 'REJECTED' WHERE id = ?", (order_id,))
-        await context.bot.send_message(chat_id=user_id, text=f"❌ የጥያቄ ቁጥር #{order_id} ግብይትዎ ተሰርዟል።")
-        await query.edit_message_text(f"Order #{order_id} ተሰርዟል።")
+async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.photo:
+        return SCREENSHOT
+    photo_file = update.message.photo[-1].file_id
+    if context.user_data is not None:
+        context.user_data['photo_file'] = photo_file
 
-    conn.commit()
-    conn.close()
+    await update.message.reply_text(
+        "📥 የክፍያ ደረሰኝዎ ተቀብለናል!\n\n"
+        "አሁን ዶላሩ (USD) እንዲላክሎት የሚፈልጉበትን **የዋልሌት አድራሻ (Wallet Address)** ያስገቡ፦"
+    )
+    return WALLET_ADDRESS
 
-# --- 4. MAIN FUNCTION ---
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-[9/12/2026 6:56 AM] Se: app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(approve|reject)_"))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_message))
+async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.text:
+        return WALLET_ADDRESS
+    wallet_address = update.message.text
+    user = update.effective_user
+    user_data = context.user_data or {}
+    usd_amount = user_data.get('usd_amount', 0)
+    total_birr = user_data.get('total_birr', 0)
+    photo_file = user_data.get('photo_file')
 
+    if user and photo_file:
+        username_str = f"@{user.username}" if user.username else "Username የለውም"
+        admin_msg = (
+            f"📥 **አዲስ የትዕዛዝ ጥያቄ ደርሷል!**\n\n"
+            f"👤 ተጠቃሚ፦ {username_str} (ID: `{user.id}`)\n"
+            f"💵 የዶላር መጠን፦ **${usd_amount:,.2f} USD**\n"
+            f"💰 የክፍያ መጠን፦ **{total_birr:,.2f} ETB**\n"
+            f"📍 የዋልሌት አድራሻ፦ `{wallet_address}`"
+        )
+        admin_keyboard = [[
+            InlineKeyboardButton("✅ Approve (ላክሁት)", callback_data=f"approve_{user.id}"),
+            InlineKeyboardButton("❌ Reject (ሰርዝ)", callback_data=f"reject_{user.id}")
+        ]]
+        admin_markup = InlineKeyboardMarkup(admin_keyboard)
+        try:
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID, photo=photo_file, caption=admin_msg, reply_markup=admin_markup, parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"Failed to send to admin: {e}")
+
+    await update.message.reply_text(
+        "🎉 **ትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል!**\n\n"
+        "የክፍያ ደረሰኝዎ እና የዋልሌት አድራሻዎ ለአድሚን ተልኳል። አድሚኑ ክፍያውን አረጋግጦ ዶላሩን በጥቂት ደቂቃዎች ውስጥ ገቢ ያደርግልዎታል።\n\n"
+        "ስለተጠቀሙ እናመሰግናለን! 🙏",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    data = query.data
+
+    if data.startswith("approve_"):
+        target_user_id = int(data.split("_")[1])
+        if context.bot_data is not None:
+            context.bot_data['target_user_id'] = target_user_id
+            context.bot_data['admin_waiting_photo'] = True
+        await query.message.reply_text(
+            "📸 **እባክዎን የዶላር (Crypto) መላኪያውን ስክሪንሹት (Screenshot) ይላኩ፦**\n"
+            "(ፎቶውን ሲልኩ ቀጥታ ከነማረጋገጫው ለተጠቃሚው ይላካል)"
+        )
+    elif data.startswith("reject_"):
+        target_user_id = int(data.split("_")[1])
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="❌ **ትዕዛዝዎ ተሰርዟል!**\n\nየላኩት ክፍያ አልተረጋገጠም። እባክዎን ችግር ካለ አድሚኑን ያናግሩ።",
+                parse_mode="Markdown"
+            )
+            if query.message and hasattr(query.message, 'edit_caption'):
+                await getattr(query.message, 'edit_caption')(
+                    caption=query.message.caption + "\n\n🔴 **STATUS: REJECTED ❌**", parse_mode="Markdown"
+                )
+        except Exception as e:
+            logging.error(f"Error notifying user: {e}")
+
+async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.photo:
+        return
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
+        bot_data = context.bot_data or {}
+        if bot_data.get('admin_waiting_photo'):
+            target_user_id = bot_data.get('target_user_id')
+            proof_photo = update.message.photo[-1].file_id
+            if target_user_id:
+                try:
+                    msg = (
+                        "✅ **ክፍያዎ ተረጋግጧል!**\n\n"
+                        "ዶላሩ (USD) ወደ ሰጡት የዋልሌት አድራሻ በተሳካ ሁኔታ ተልኳል። "
+                        "የመላኪያ ማረጋገጫው (Receipt) ከላይ ተያይዟል! 🚀\n\n"
+                        "ስለተጠቀሙ እናመሰግናለን!"
+                    )
+                    await context.bot.send_photo(chat_id=target_user_id, photo=proof_photo, caption=msg, parse_mode="Markdown")
+                    await update.message.reply_text("✅ **የመላኪያ ስክሪንሹቱ እና ማረጋገጫው ለተጠቃሚው ተልኳል!**")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ ለተጠቃሚው መላክ አልተቻለም፦ {e}")
+                bot_data['admin_waiting_photo'] = False
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message:
+        await update.message.reply_text("ሂደቱ ተሰርዟል። እንደገና ለመጀመር /start ብለው ይፃፉ።")
+    return ConversationHandler.END
+
+def main() -> None:
+    if not BOT_TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN missing.")
+        return
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    conv_handler: Any = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            PAYMENT: [CallbackQueryHandler(payment_selected, pattern="^telebirr$")],
+            SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
+            WALLET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(admin_action_handler, pattern="^(approve|reject)_"))
+    app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_ID), handle_admin_photo))
+    print("Bot is running...")
     app.run_polling()
 
-if name == "main":
+if __name__ == "__main__":
     main()
