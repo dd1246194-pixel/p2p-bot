@@ -124,10 +124,12 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         username_str = f"@{user.username}" if user.username else "Username የለውም"
         admin_msg = (
             f"📥 **አዲስ የትዕዛዝ ጥያቄ ደርሷል!**\n\n"
-            f"👤 ተጠቃሚ፦ {username_str} (ID: `{user.id}`)\n"
+            f"👤 ተጠቃሚ፦ {username_str}\n"
+            f"🆔 User ID: `{user.id}`\n"
             f"💵 የዶላር መጠን፦ **${usd_amount:,.2f} USD**\n"
             f"💰 የክፍያ መጠን፦ **{total_birr:,.2f} ETB**\n"
-            f"📍 የዋልሌት አድራሻ፦ `{wallet_address}`"
+            f"📍 የዋልሌት አድራሻ፦ `{wallet_address}`\n\n"
+            f"📌 **Status:** ⏳ Pending Approval"
         )
         admin_keyboard = [[
             InlineKeyboardButton("✅ Approve (ላክሁት)", callback_data=f"approve_{user.id}"),
@@ -142,9 +144,9 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logging.error(f"Failed to send to admin: {e}")
 
     await update.message.reply_text(
-        "🎉 **ትዕዛዝዎ በተሳካ ሁኔታ ተጠናቋል!**\n\n"
-        "የክፍያ ደረሰኝዎ እና የዋልሌት አድራሻዎ ለአድሚን ተልኳል። አድሚኑ ክፍያውን አረጋግጦ ዶላሩን በጥቂት ደቂቃዎች ውስጥ ገቢ ያደርግልዎታል።\n\n"
-        "ስለተጠቀሙ እናመሰግናለን! 🙏",
+        "🎉 **ትዕዛዝዎ በስርዓት ደርሶናል!**\n\n"
+        "🟡 **የክፍያ ሁኔታ (Status):** ⏳ *በግምገማ ላይ (Pending)*\n\n"
+        "አድሚኑ ክፍያውን አረጋግጦ ዶላሩን ሲልክልዎ በቦቱ በኩል ወዲያውኑ መልእክት ይደርስዎታል።",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
@@ -161,6 +163,17 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if context.bot_data is not None:
             context.bot_data['target_user_id'] = target_user_id
             context.bot_data['admin_waiting_photo'] = True
+        
+        # Notify User of Status Change
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="🟢 **የክፍያ ሁኔታ (Status):** 🔄 *ክፍያዎ ተረጋግጧል! አድሚኑ Crypto እየላከልዎ ነው...*",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"Failed to notify user: {e}")
+
         await query.message.reply_text(
             "📸 **እባክዎን የዶላር (Crypto) መላኪያውን ስክሪንሹት (Screenshot) ይላኩ፦**\n"
             "(ፎቶውን ሲልኩ ቀጥታ ከነማረጋገጫው ለተጠቃሚው ይላካል)"
@@ -170,7 +183,7 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text="❌ **ትዕዛዝዎ ተሰርዟል!**\n\nየላኩት ክፍያ አልተረጋገጠም። እባክዎን ችግር ካለ አድሚኑን ያናግሩ።",
+                text="🔴 **የክፍያ ሁኔታ (Status):** ❌ *ትዕዛዝዎ አልተሳካም/ተሰርዟል!*\n\nየላኩት ክፍያ አልተረጋገጠም። እባክዎን ችግር ካለ አድሚኑን ያናግሩ።",
                 parse_mode="Markdown"
             )
             if query.message and hasattr(query.message, 'edit_caption'):
@@ -191,7 +204,7 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if target_user_id:
                 try:
                     msg = (
-                        "✅ **ክፍያዎ ተረጋግጧል!**\n\n"
+                        "🟢 **የክፍያ ሁኔታ (Status):** ✅ *ተጠናቋል (Completed)*\n\n"
                         "ዶላሩ (USD) ወደ ሰጡት የዋልሌት አድራሻ በተሳካ ሁኔታ ተልኳል። "
                         "የመላኪያ ማረጋገጫው (Receipt) ከላይ ተያይዟል! 🚀\n\n"
                         "ስለተጠቀሙ እናመሰግናለን!"
@@ -201,6 +214,24 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     await update.message.reply_text(f"❌ ለተጠቃሚው መላክ አልተቻለም፦ {e}")
                 bot_data['admin_waiting_photo'] = False
+
+async def admin_send_direct_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("⚠️ **የአጠቃቀም ስህተት!**\n\nትክክለኛ አጠቃቀም፦ `/send <USER_ID> <መልእክት>`\n\nለምሳሌ፦ `/send 123456789 ሰላም ክፍያዎ ደርሶናል`", parse_mode="Markdown")
+        return
+    try:
+        target_id = int(context.args[0])
+        text_to_send = " ".join(context.args[1:])
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=f"💬 **ከ አድሚን የተላከ መልእክት፦**\n\n{text_to_send}",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(f"✅ መልእክቱ ለ ID `{target_id}` በስኬት ተልኳል!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ መልእክቱን መላክ አልተቻለም፦ {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
@@ -228,6 +259,7 @@ def main() -> None:
         per_message=False
     )
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("send", admin_send_direct_message))
     app.add_handler(CallbackQueryHandler(admin_action_handler, pattern="^(approve|reject)_"))
     app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_ID), handle_admin_photo))
     print("Bot is running...")
