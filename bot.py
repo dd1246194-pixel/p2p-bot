@@ -205,7 +205,6 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="Markdown"
         )
 
-    # User Receipts Confirmation
     elif data.startswith("userconfirm_"):
         parts = data.split("_")
         status = parts[1]
