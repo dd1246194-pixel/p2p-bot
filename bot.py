@@ -131,10 +131,15 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"📍 የዋልሌት አድራሻ፦ `{wallet_address}`\n\n"
             f"📌 **Status:** ⏳ Pending Approval"
         )
-        admin_keyboard = [[
-            InlineKeyboardButton("✅ Approve (ላክሁት)", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton("❌ Reject (ሰርዝ)", callback_data=f"reject_{user.id}")
-        ]]
+        admin_keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}")
+            ],
+            [
+                InlineKeyboardButton("💬 Send Message", callback_data=f"msg_{user.id}")
+            ]
+        ]
         admin_markup = InlineKeyboardMarkup(admin_keyboard)
         try:
             await context.bot.send_photo(
@@ -164,7 +169,6 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             context.bot_data['target_user_id'] = target_user_id
             context.bot_data['admin_waiting_photo'] = True
         
-        # Notify User of Status Change
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -193,6 +197,37 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logging.error(f"Error notifying user: {e}")
 
+    elif data.startswith("msg_"):
+        target_user_id = int(data.split("_")[1])
+        await query.message.reply_text(
+            f"💬 **ለዚህ ተጠቃሚ (ID: `{target_user_id}`) መልእክት ለመላክ፦**\n\n"
+            f"`/send {target_user_id} መልእክትህ` ብለህ ፃፍ።",
+            parse_mode="Markdown"
+        )
+
+    # User Receipts Confirmation
+    elif data.startswith("userconfirm_"):
+        parts = data.split("_")
+        status = parts[1]
+        user_id = parts[2]
+        
+        if status == "yes":
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ **ስለተጠቀሙ እናመሰግናለን! መልካም ቀን!**")
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🎉 **የተጠቃሚ ማረጋገጫ፦** ID `{user_id}` ዶላሩ **በስኬት እንደደረሰው** አረጋግጧል!",
+                parse_mode="Markdown"
+            )
+        elif status == "no":
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.reply_text("⚠️ **የስህተት ጥያቄዎ ለአድሚን ተልኳል!** አድሚኑ በጥቂት ደቂቃዎች ውስጥ ያናግርዎታል።")
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🚨 **ማስጠንቀቂያ፦** ID `{user_id}` ዶላሩ **አልደረሰኝም** ብሏል! እባክዎን አረጋግጡላቸው።",
+                parse_mode="Markdown"
+            )
+
 async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.photo:
         return
@@ -207,9 +242,16 @@ async def handle_admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "🟢 **የክፍያ ሁኔታ (Status):** ✅ *ተጠናቋል (Completed)*\n\n"
                         "ዶላሩ (USD) ወደ ሰጡት የዋልሌት አድራሻ በተሳካ ሁኔታ ተልኳል። "
                         "የመላኪያ ማረጋገጫው (Receipt) ከላይ ተያይዟል! 🚀\n\n"
-                        "ስለተጠቀሙ እናመሰግናለን!"
+                        "እባክዎን ዶላሩ መድረሱን ያረጋግጡ፦"
                     )
-                    await context.bot.send_photo(chat_id=target_user_id, photo=proof_photo, caption=msg, parse_mode="Markdown")
+                    user_keyboard = [
+                        [
+                            InlineKeyboardButton("✅ ደርሶኛል (Received)", callback_data=f"userconfirm_yes_{target_user_id}"),
+                            InlineKeyboardButton("❌ አልደረሰኝም (Not Received)", callback_data=f"userconfirm_no_{target_user_id}")
+                        ]
+                    ]
+                    user_markup = InlineKeyboardMarkup(user_keyboard)
+                    await context.bot.send_photo(chat_id=target_user_id, photo=proof_photo, caption=msg, reply_markup=user_markup, parse_mode="Markdown")
                     await update.message.reply_text("✅ **የመላኪያ ስክሪንሹቱ እና ማረጋገጫው ለተጠቃሚው ተልኳል!**")
                 except Exception as e:
                     await update.message.reply_text(f"❌ ለተጠቃሚው መላክ አልተቻለም፦ {e}")
@@ -260,7 +302,7 @@ def main() -> None:
     )
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("send", admin_send_direct_message))
-    app.add_handler(CallbackQueryHandler(admin_action_handler, pattern="^(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(admin_action_handler, pattern="^(approve|reject|msg|userconfirm)_"))
     app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_ID), handle_admin_photo))
     print("Bot is running...")
     app.run_polling()
