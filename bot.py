@@ -2,7 +2,6 @@
 import os
 import sqlite3
 import logging
-from typing import Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,7 +27,7 @@ logger = logging.getLogger("OKXETH_P2P_BOT")
 # -----------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 7798227927
-DEFAULT_RATE = 186.0
+DEFAULT_RATE = 184.0
 TELEBIRR_NUMBER = "0900253321"
 ADMIN_NAME = "Bereket"
 ADMIN_WALLET_ADDRESS = "TMAbfELuLH7gGyjp6YgUV1WWpPYwhaE27V"
