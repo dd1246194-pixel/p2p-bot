@@ -14,14 +14,18 @@ from telegram.ext import (
     filters,
 )
 
+# -----------------------------------------------------------------------------
 # LOGGING CONFIGURATION
+# -----------------------------------------------------------------------------
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger("OKXETH_P2P_BOT")
 
+# -----------------------------------------------------------------------------
 # CONFIGURATION
+# -----------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 7798227927
 DEFAULT_RATE = 184.0
@@ -31,7 +35,9 @@ ADMIN_WALLET_ADDRESS = "TMAbfELuLH7gGyjp6YgUV1WWpPYwhaE27V"
 MIN_USD = 10.0
 MAX_USD = 2100.0
 
+# -----------------------------------------------------------------------------
 # CONVERSATION STATES
+# -----------------------------------------------------------------------------
 (
     LANG,
     TRADE_TYPE,
@@ -44,7 +50,9 @@ MAX_USD = 2100.0
     SUPPORT_MSG
 ) = range(9)
 
+# -----------------------------------------------------------------------------
 # DATABASE MANAGEMENT
+# -----------------------------------------------------------------------------
 DB_FILE = "bot_data.db"
 
 def init_db() -> None:
@@ -69,9 +77,12 @@ def db_get_rate() -> float:
             row = cursor.fetchone()
             return float(row[0]) if row else DEFAULT_RATE
     except Exception as e:
-        logger.error(f"Error fetching rate from DB: {e}")
+        logger.error(f"Error fetching rate: {e}")
         return DEFAULT_RATE
 
+# -----------------------------------------------------------------------------
+# PERMANENT KEYBOARD & TEXTS
+# -----------------------------------------------------------------------------
 PERMANENT_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("🔄 Main Menu / Restart")]],
     resize_keyboard=True
@@ -79,29 +90,94 @@ PERMANENT_KEYBOARD = ReplyKeyboardMarkup(
 
 TEXTS = {
     'am': {
-        'welcome': "✨ <b>OKXETH P2P TRADING BOT</b> ✨\n\n📈 <b>ተመን፦</b> <code>1 USD = {rate} Birr</code>\n\n👇 ምረጡ፦",
-        'enter_amount_buy': "✍️ መግዛት የሚፈልጉትን መጠን (USD) ያስገቡ (${min}-${max}):",
-        'enter_amount_sell': "✍️ መሸጥ የሚፈልጉትን መጠን (USD) ያስገቡ (${min}-${max}):",
-        'invalid_num': "⚠️ ከ <b>${min}</b> እስከ <b>${max} USD</b> ያስገቡ፦",
-        'summary_buy': "📋 <b>የግዢ ማጠቃለያ</b>\nUSD: <code>${usd:,.2f}</code>\nETB: <code>{birr:,.2f}</code>",
-        'summary_sell': "📋 <b>የመሸጫ ማጠቃለያ</b>\nUSD: <code>${usd:,.2f}</code>\nETB: <code>{birr:,.2f}</code>",
-        'pay_instruct_buy': "📱 Telebirr: <code>{num}</code>\nክፍያ: <code>{birr:,.2f} ETB</code>\n\nየደረሰኝ Screenshot ይላኩ።",
-        'pay_instruct_sell': "🌐 TRC20 Wallet: <code>{wallet}</code>\nመጠን: <code>${usd:,.2f} USD</code>\n\nየመላኪያ Screenshot ይላኩ።",
-        'got_ss_buy': "📥 የ TRC20 Wallet Address ያስገቡ፦",
-        'got_ss_sell': "📥 የባንክ ስም፣ አካውንት እና ሙሉ ስም ያስገቡ፦",
-        'complete': "🎉 ትዕዛዝዎ ተልኳል! አድሚኑ አረጋግጦ ይጨርሳል።",
-        'btn_cancel': "❌ ሰርዝ",
-        'btn_contact': "💬 Help & Support"
+        'welcome': (
+            "🏦 <b>OKXETH OFFICIAL P2P TRADING BOT</b> 🏦\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "👋 <b>እንኳን ወደ አስተማማኙ የ P2P የምንዛሬ ቦት በሰላም መጡ!</b>\n\n"
+            "📊 <b>የዛሬው የምንዛሬ ተመን፦</b>\n"
+            "└ <code>1 USD = {rate:,.2f} ETB</code>\n\n"
+            "⚡ <i>ፈጣን፣ አስተማማኝ እና ሙሉ ደህንነቱ የተጠበቀ አገልግሎት!</i>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "👇 <b>እባክዎን ማድረግ የሚፈልጉትን ይምረጡ፦</b>"
+        ),
+        'enter_amount_buy': (
+            "🟢 <b>የግዢ መጠን ያስገቡ (BUY USD)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>የግዢ ወሰን፦</b>\n"
+            "├ <b>አነስተኛ:</b> <code>${min:,.2f} USD</code>\n"
+            "└ <b>ከፍተኛ:</b> <code>${max:,.2f} USD</code>\n\n"
+            "✍️ <i>መግዛት የሚፈልጉትን የ USD መጠን በቁጥር ብቻ ያስገቡ፦</i>"
+        ),
+        'enter_amount_sell': (
+            "🔴 <b>የመሸጫ መጠን ያስገቡ (SELL USD)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>የመሸጫ ወሰን፦</b>\n"
+            "├ <b>አነስተኛ:</b> <code>${min:,.2f} USD</code>\n"
+            "└ <b>ከፍተኛ:</b> <code>${max:,.2f} USD</code>\n\n"
+            "✍️ <i>መሸጥ የሚፈልጉትን የ USD መጠን በቁጥር ብቻ ያስገቡ፦</i>"
+        ),
+        'invalid_num': "⚠️ <b>የተሳሳተ ቁጥር!</b>\nእባክዎን ከ <b>${min:,.2f}</b> እስከ <b>${max:,.2f} USD</b> ባለው ወሰን ውስጥ ብቻ ያስገቡ፦",
+        'summary_buy': (
+            "🧾 <b>የግዢ ትዕዛዝ ማጠቃለያ (BUY RECEIPT)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💵 <b>የሚገዙት መጠን:</b> <code>${usd:,.2f} USD</code>\n"
+            "📈 <b>የምንዛሬ ተመን:</b> <code>{rate:,.2f} ETB</code>\n"
+            "💰 <b>ጠቅላላ የሚከፍሉት:</b> <code>{birr:,.2f} ETB</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ለማረጋገጥና ወደ ክፍያ ለመሄድ ከታች ያለውን አዝራር ይጫኑ፦"
+        ),
+        'summary_sell': (
+            "🧾 <b>የመሸጫ ትዕዛዝ ማጠቃለያ (SELL RECEIPT)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💵 <b>የሚሸጡት መጠን:</b> <code>${usd:,.2f} USD</code>\n"
+            "📈 <b>የምንዛሬ ተመን:</b> <code>{rate:,.2f} ETB</code>\n"
+            "💰 <b>ጠቅላላ የሚቀበሉት:</b> <code>{birr:,.2f} ETB</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ለማረጋገጥና ወደ ክፍያ ለመሄድ ከታች ያለውን አዝራር ይጫኑ፦"
+        ),
+        'pay_instruct_buy': (
+            "📱 <b>የ TELEBIRR ክፍያ መመሪያ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣ ወደ Telebirr መተግበሪያዎ ወይም *127# ይሂዱ።\n"
+            "2️⃣ ወደሚከተለው ስልክ ቁጥር ክፍያ ይፈጽሙ፦\n"
+            "👉 <code>{num}</code>\n\n"
+            "💵 <b>የሚከፍሉት ትክክለኛ መጠን:</b> <code>{birr:,.2f} ETB</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "3️⃣ ክፍያውን እንደፈጸሙ የደረሰኙን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+        ),
+        'pay_instruct_sell': (
+            "🌐 <b>የ USDT (TRC20) መላኪያ መመሪያ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣ ወደ የትኛውም ዋሌትዎ (Binance, Trust Wallet, etc.) ይሂዱ።\n"
+            "2️⃣ ወደሚከተለው TRC20 Wallet Address ይላኩ፦\n"
+            "👉 <code>{wallet}</code>\n\n"
+            "💵 <b>የሚልኩት ትክክለኛ መጠን:</b> <code>${usd:,.2f} USDT</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "3️⃣ ዶላሩን እንደላኩ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+        ),
+        'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን የ <b>TRC20 Wallet Address</b> ጽፈው ይላኩልን፦",
+        'got_ss_sell': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🏦 አሁን ብር ገቢ የሚደረግበትን የ<b>ባንክ ስም፣ አካውንት ቁጥር እና ሙሉ ስም</b> ጽፈው ይላኩልን፦",
+        'complete': (
+            "🎉 <b>ትዕዛዝዎ በስኬት ተላኳል!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⏳ አድሚኖቻችን መረጃዎን በማረጋገጥ ላይ ናቸው። እንደተጠናቀቀ መልእክት ይደርስዎታል።\n"
+            "እናመሰግናለን!"
+        ),
+        'btn_cancel': "❌ ሰርዝ (Cancel)",
+        'btn_support': "💬 እገዛና ቅሬታ (Support)"
     }
 }
 
+# -----------------------------------------------------------------------------
+# FLOW HANDLERS
+# -----------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [InlineKeyboardButton("🇪🇹 አማርኛ", callback_data="lang_am"), InlineKeyboardButton("🇬🇧 English", callback_data="lang_am")]
     ]
     if update.message:
         await update.message.reply_text("🌐 <b>Select Language / ቋንቋ ይምረጡ፦</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        await update.message.reply_text("💡 ለማስተካከል 'Main Menu' ይጫኑ።", reply_markup=PERMANENT_KEYBOARD)
+        await update.message.reply_text("💡 <i>ዋናው ሜኑ ላይ ለመመለስ ሁልጊዜ ከታች 'Main Menu' የሚለውን ይጠቀሙ።</i>", reply_markup=PERMANENT_KEYBOARD, parse_mode="HTML")
     return LANG
 
 async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -110,7 +186,8 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         rate = db_get_rate()
         keyboard = [
-            [InlineKeyboardButton("🟢 Buy USD", callback_data="trade_buy"), InlineKeyboardButton("🔴 Sell USD", callback_data="trade_sell")]
+            [InlineKeyboardButton("🟢 Buy USD (መግዛት)", callback_data="trade_buy"), InlineKeyboardButton("🔴 Sell USD (መሸጥ)", callback_data="trade_sell")],
+            [InlineKeyboardButton(TEXTS['am']['btn_support'], callback_data="bot_support")]
         ]
         await query.message.edit_text(TEXTS['am']['welcome'].format(rate=rate), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     return TRADE_TYPE
@@ -121,8 +198,10 @@ async def select_trade_type(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer()
         trade_type = query.data.split("_")[1]
         context.user_data['trade_type'] = trade_type
+        
+        keyboard = [[InlineKeyboardButton(TEXTS['am']['btn_cancel'], callback_data="user_cancel")]]
         msg = TEXTS['am']['enter_amount_buy'].format(min=MIN_USD, max=MAX_USD) if trade_type == 'buy' else TEXTS['am']['enter_amount_sell'].format(min=MIN_USD, max=MAX_USD)
-        await query.message.edit_text(msg, parse_mode="HTML")
+        await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     return AMOUNT
 
 async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -139,8 +218,12 @@ async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['usd_amount'] = usd_amount
         context.user_data['total_birr'] = total_birr
 
-        keyboard = [[InlineKeyboardButton("ቀጥል ➡️", callback_data="proceed_pay")]]
-        msg = TEXTS['am']['summary_buy'].format(usd=usd_amount, birr=total_birr)
+        keyboard = [
+            [InlineKeyboardButton("አረጋግጥና ቀጥል ➡️", callback_data="proceed_pay")],
+            [InlineKeyboardButton(TEXTS['am']['btn_cancel'], callback_data="user_cancel")]
+        ]
+        trade_type = context.user_data.get('trade_type', 'buy')
+        msg = TEXTS['am']['summary_buy'].format(usd=usd_amount, rate=rate, birr=total_birr) if trade_type == 'buy' else TEXTS['am']['summary_sell'].format(usd=usd_amount, rate=rate, birr=total_birr)
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         return PAYMENT
     except ValueError:
@@ -155,13 +238,15 @@ async def payment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         total_birr = context.user_data.get('total_birr', 0)
         usd_amount = context.user_data.get('usd_amount', 0)
 
+        keyboard = [[InlineKeyboardButton(TEXTS['am']['btn_cancel'], callback_data="user_cancel")]]
+
         if trade_type == 'buy':
             msg = TEXTS['am']['pay_instruct_buy'].format(birr=total_birr, num=TELEBIRR_NUMBER)
-            await query.message.reply_text(msg, parse_mode="HTML")
+            await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             return SCREENSHOT
         else:
             msg = TEXTS['am']['pay_instruct_sell'].format(usd=usd_amount, wallet=ADMIN_WALLET_ADDRESS)
-            await query.message.reply_text(msg, parse_mode="HTML")
+            await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             return SELL_SCREENSHOT
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -171,22 +256,88 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WALLET_ADDRESS
     return SCREENSHOT
 
+async def receive_sell_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message and update.message.photo:
+        context.user_data['photo_file'] = update.message.photo[-1].file_id
+        await update.message.reply_text(TEXTS['am']['got_ss_sell'], parse_mode="HTML")
+        return SELL_TELEBIRR
+    return SELL_SCREENSHOT
+
 async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message and update.message.text:
         wallet = update.message.text
         user = update.effective_user
         if user:
-            admin_msg = f"🚨 <b>NEW BUY ORDER!</b>\nUser: @{user.username}\nUSD: ${context.user_data.get('usd_amount')}\nWallet: <code>{wallet}</code>"
-            await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data['photo_file'], caption=admin_msg, parse_mode="HTML")
+            admin_msg = (
+                f"🚨 <b>NEW BUY ORDER RECEIVED!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
+                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
+                f"📍 <b>Payout Wallet:</b> <code>{wallet}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            admin_btn = [[
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}")
+            ]]
+            await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data['photo_file'], caption=admin_msg, reply_markup=InlineKeyboardMarkup(admin_btn), parse_mode="HTML")
         await update.message.reply_text(TEXTS['am']['complete'], parse_mode="HTML")
         return ConversationHandler.END
     return WALLET_ADDRESS
+
+async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message and update.message.text:
+        bank_info = update.message.text
+        user = update.effective_user
+        if user:
+            admin_msg = (
+                f"🚨 <b>NEW SELL ORDER RECEIVED!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
+                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
+                f"🏦 <b>Payout Bank/Telebirr:</b> <code>{bank_info}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            admin_btn = [[
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}")
+            ]]
+            await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data['photo_file'], caption=admin_msg, reply_markup=InlineKeyboardMarkup(admin_btn), parse_mode="HTML")
+        await update.message.reply_text(TEXTS['am']['complete'], parse_mode="HTML")
+        return ConversationHandler.END
+    return SELL_TELEBIRR
+
+async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query:
+        await query.answer()
+        data = query.data.split("_")
+        action = data[0]
+        user_id = int(data[1])
+
+        if action == "approve":
+            await context.bot.send_message(chat_id=user_id, text="🎉 <b>ትዕዛዝዎ በአድሚን ተረጋግጦ ተጠናቋል!</b>\nስላገለገልንዎት ደስ ብሎናል።", parse_mode="HTML")
+            await query.edit_message_caption(caption=query.message.caption + "\n\n✅ <b>STATUS: APPROVED</b>", parse_mode="HTML")
+        elif action == "reject":
+            await context.bot.send_message(chat_id=user_id, text="❌ <b>ትዕዛዝዎ በአድሚን አልፀደቀም።</b>\nእባክዎን ለበለጠ መረጃ አድሚኑን ያነጋግሩ።", parse_mode="HTML")
+            await query.edit_message_caption(caption=query.message.caption + "\n\n❌ <b>STATUS: REJECTED</b>", parse_mode="HTML")
+
+async def cancel_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query and update.callback_query.message:
+        await update.callback_query.answer()
+        await update.callback_query.message.edit_text("❌ <b>ትዕዛዙ ተሰርዟል።</b>\nእንደገና ለመጀመር /start ይበሉ።", parse_mode="HTML")
+    return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
         await update.message.reply_text("❌ ትዕዛዙ ተሰርዟል።")
     return ConversationHandler.END
 
+# -----------------------------------------------------------------------------
+# MAIN EXECUTION
+# -----------------------------------------------------------------------------
 def main() -> None:
     if not BOT_TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN missing.")
@@ -200,17 +351,24 @@ def main() -> None:
         states={
             LANG: [CallbackQueryHandler(select_language, pattern="^lang_")],
             TRADE_TYPE: [CallbackQueryHandler(select_trade_type, pattern="^trade_")],
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), get_amount)],
             PAYMENT: [CallbackQueryHandler(payment_selected, pattern="^proceed_pay$")],
             SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
-            WALLET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet)],
+            WALLET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), receive_wallet)],
+            SELL_SCREENSHOT: [MessageHandler(filters.PHOTO, receive_sell_screenshot)],
+            SELL_TELEBIRR: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), receive_sell_telebirr)],
         },
-        fallbacks=[CommandHandler("cancel", cancel), restart_handler],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            restart_handler,
+            CallbackQueryHandler(cancel_button_handler, pattern="^user_cancel$")
+        ],
         per_message=False
     )
 
     app.add_handler(restart_handler)
     app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(approve|reject)_"))
 
     logger.info("Bot starting with auto-reconnect...")
     app.run_polling(drop_pending_updates=True)
