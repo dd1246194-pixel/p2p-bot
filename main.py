@@ -1,4 +1,3 @@
-# type: ignore
 import os
 import sqlite3
 import logging
@@ -51,21 +50,26 @@ MAX_USD = 2100.0
 ) = range(9)
 
 # -----------------------------------------------------------------------------
-# DATABASE MANAGEMENT
+# DATABASE MANAGEMENT (WITH VACUUM & WAL FOR SPACE OPTIMIZATION)
 # -----------------------------------------------------------------------------
 DB_FILE = "bot_data.db"
 
 def init_db() -> None:
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value REAL
-            )
-        ''')
-        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
-        conn.commit()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")  # Speed & Space optimization
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value REAL
+                )
+            ''')
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
+            conn.commit()
+            cursor.execute("VACUUM;")  # Shrink database size
+    except Exception as e:
+        logger.error(f"Error initializing DB: {e}")
 
 init_db()
 
@@ -147,8 +151,7 @@ TEXTS = {
             "👤 <b>ስም:</b> <code>{name}</code>\n\n"
             "💵 <b>የሚከፍሉት ትክክለኛ መጠን:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>የጊዜ ገደብ፦ 15:00 ደቂቃ</b>\n"
-            "3️⃣ ክፍያውን እንደፈጸሙ በ <b>15 ደቂቃ</b> ውስጥ የደረሰኙን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+            "3️⃣ ክፍያውን እንደፈጸሙ የደረሰኙን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
         ),
         'pay_instruct_sell': (
             "🌐 <b>የ USDT (TRC20) መላኪያ መመሪያ</b>\n"
@@ -158,8 +161,7 @@ TEXTS = {
             "👉 <code>{wallet}</code>\n\n"
             "💵 <b>የሚልኩት ትክክለኛ መጠን:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>የጊዜ ገደብ፦ 15:00 ደቂቃ</b>\n"
-            "3️⃣ ዶላሩን እንደላኩ በ <b>15 ደቂቃ</b> ውስጥ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+            "3️⃣ ዶላሩን እንደላኩ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
         ),
         'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን የ <b>TRC20 Wallet Address</b> ጽፈው ይላኩልን፦",
         'got_ss_sell': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n📱 አሁን ብር ገቢ የሚደረግበትን የ<b>Telebirr ስልክ ቁጥር እና ሙሉ ስም</b> ጽፈው ይላኩልን፦",
@@ -169,7 +171,6 @@ TEXTS = {
             "⏳ አድሚኖቻችን መረጃዎን በማረጋገጥ ላይ ናቸው። እንደተጠናቀቀ መልእክትና የክፍያ Proof ይደርስዎታል።\n"
             "እናመሰግናለን!"
         ),
-        'timeout': "⏱ <b>የ 15 ደቂቃ ጊዜዎ አልቋል!</b>\n\nትዕዛዙ በጊዜ ገደቡ ውስጥ የክፍያ Screenshot ስላልተላከ ተሰርዟል። እባክዎን እንደገና ለመጀመር /start ይበሉ።",
         'support_prompt': "💬 <b>እገዛና ጥያቄ መስመር</b>\n━━━━━━━━━━━━━━━━━━━━━━\nያልገባዎትን ነገር፣ ጥያቄዎን ወይም አስተያየትዎን እዚህ ጽፈው ይላኩልን። አድሚኖቻችን በፍጥነት ይመልሱልዎታል።",
         'support_sent': "✅ መልእክትዎ ለአድሚን ተልኳል! በአጭር ጊዜ ውስጥ መልስ ይደርስዎታል።",
         'btn_cancel': "❌ ሰርዝ (Cancel)",
@@ -233,8 +234,7 @@ TEXTS = {
             "👤 <b>Maqaa:</b> <code>{name}</code>\n\n"
             "💵 <b>Hanga Kaffaltii:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>Daangaa Yeroo፦ Dq 15:00</b>\n"
-            "3️⃣ Kaffaltii raawwattanii <b>Daqiiqaa 15</b> keessatti <b>Screenshot (Suraa)</b> asitti ergaa."
+            "3️⃣ Kaffaltii raawwattanii <b>Screenshot (Suraa)</b> asitti ergaa."
         ),
         'pay_instruct_sell': (
             "🌐 <b>Qajeelfama Ergaa USDT (TRC20)</b>\n"
@@ -244,8 +244,7 @@ TEXTS = {
             "👉 <code>{wallet}</code>\n\n"
             "💵 <b>Hanga Ergtan:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>Daangaa Yeroo፦ Dq 15:00</b>\n"
-            "3️⃣ Ergtanii <b>Daqiiqaa 15</b> keessatti <b>Screenshot (Suraa)</b> asitti ergaa."
+            "3️⃣ Ergtanii <b>Screenshot (Suraa)</b> asitti ergaa."
         ),
         'got_ss_buy': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n🎯 Amma Teessoo <b>TRC20 Wallet Address</b> keessan barreessitanii ergaa፦",
         'got_ss_sell': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n📱 Amma Lakkoofsa <b>Telebirr fi Maqaa Guutuu</b> keessan barreessitanii ergaa፦",
@@ -255,7 +254,6 @@ TEXTS = {
             "⏳ Adminoonni keenya mirkaneessaa jiru. Erga xumuramee deebii fi Proof isiniif ergana.\n"
             "Galatoomaa!"
         ),
-        'timeout': "⏱ <b>Yeroon Daqiiqaa 15 xumurameera!</b>\n\nAjajni keessan haqameera. Maaloo irra deebitanii jalqabuuf /start cuqaasaa.",
         'support_prompt': "💬 <b>Gaaffii fi Deeggersa</b>\n━━━━━━━━━━━━━━━━━━━━━━\nGaaffii ykn yaada qabdan asitti barreessitanii ergaa. Adminiin keenya saffisaan isiniif deebisa.",
         'support_sent': "✅ Ergaan keessan Adminif ergameera! Yeroo dhiyootti deebiin isiniif ergama.",
         'btn_cancel': "❌ Haqi (Cancel)",
@@ -319,8 +317,7 @@ TEXTS = {
             "👤 <b>Name:</b> <code>{name}</code>\n\n"
             "💵 <b>Exact Amount to Pay:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>Time Limit: 15:00 minutes</b>\n"
-            "3️⃣ Send the payment <b>Screenshot (Image)</b> here within <b>15 minutes</b>."
+            "3️⃣ Send the payment <b>Screenshot (Image)</b> here."
         ),
         'pay_instruct_sell': (
             "🌐 <b>USDT (TRC20) TRANSFER INSTRUCTIONS</b>\n"
@@ -330,8 +327,7 @@ TEXTS = {
             "👉 <code>{wallet}</code>\n\n"
             "💵 <b>Exact Amount to Send:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "⏱ <b>Time Limit: 15:00 minutes</b>\n"
-            "3️⃣ Send the transfer <b>Screenshot (Image)</b> here within <b>15 minutes</b>."
+            "3️⃣ Send the transfer <b>Screenshot (Image)</b> here."
         ),
         'got_ss_buy': "✅ <b>Screenshot received!</b>\n\n🎯 Now reply with your <b>TRC20 Wallet Address</b> to receive the USD:",
         'got_ss_sell': "✅ <b>Screenshot received!</b>\n\n📱 Now reply with your <b>Telebirr Phone Number & Full Name</b>:",
@@ -341,7 +337,6 @@ TEXTS = {
             "⏳ Our admins are verifying your request. You will be notified with payment proof shortly.\n"
             "Thank you!"
         ),
-        'timeout': "⏱ <b>15 Minutes Time Limit Expired!</b>\n\nYour order has been cancelled due to inactivity. Please type /start to try again.",
         'support_prompt': "💬 <b>Help & Support</b>\n━━━━━━━━━━━━━━━━━━━━━━\nPlease type your message or question below. Our support team will reply shortly.",
         'support_sent': "✅ Your message has been sent to Admin! You will get a response soon.",
         'btn_cancel': "❌ Cancel",
@@ -358,6 +353,7 @@ def get_txt(context: ContextTypes.DEFAULT_TYPE) -> dict:
 # FLOW HANDLERS
 # -----------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()  # Clear cache to save memory
     keyboard = [
         [
             InlineKeyboardButton("🇪🇹 አማርኛ", callback_data="lang_am"),
@@ -418,6 +414,7 @@ async def handle_support_msg(update: Update, context: ContextTypes.DEFAULT_TYPE)
             admin_btn = [[InlineKeyboardButton("💬 Reply to User", callback_data=f"reply_{user.id}")]]
             await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=InlineKeyboardMarkup(admin_btn), parse_mode="HTML")
         await update.message.reply_text(txt['support_sent'], parse_mode="HTML")
+        context.user_data.clear()
         return ConversationHandler.END
     return SUPPORT_MSG
 
@@ -508,6 +505,7 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ]
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data['photo_file'], caption=admin_msg, reply_markup=InlineKeyboardMarkup(admin_btn), parse_mode="HTML")
         await update.message.reply_text(txt['complete'], parse_mode="HTML")
+        context.user_data.clear()
         return ConversationHandler.END
     return WALLET_ADDRESS
 
@@ -533,14 +531,9 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
             ]
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data['photo_file'], caption=admin_msg, reply_markup=InlineKeyboardMarkup(admin_btn), parse_mode="HTML")
         await update.message.reply_text(txt['complete'], parse_mode="HTML")
+        context.user_data.clear()
         return ConversationHandler.END
     return SELL_TELEBIRR
-
-async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    txt = get_txt(context)
-    if update and update.effective_message:
-        await update.effective_message.reply_text(txt['timeout'], parse_mode="HTML")
-    return ConversationHandler.END
 
 # -----------------------------------------------------------------------------
 # ADMIN ACTIONS HANDLER
@@ -605,11 +598,13 @@ async def cancel_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if update.callback_query and update.callback_query.message:
         await update.callback_query.answer()
         await update.callback_query.message.edit_text("❌ <b>ትዕዛዙ ተሰርዟል። / Cancelled.</b>\nእንደገና ለመጀመር /start ይበሉ።", parse_mode="HTML")
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
         await update.message.reply_text("❌ ትዕዛዙ ተሰርዟል።")
+    context.user_data.clear()
     return ConversationHandler.END
 
 # -----------------------------------------------------------------------------
@@ -635,24 +630,20 @@ def main() -> None:
             WALLET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), receive_wallet)],
             SELL_SCREENSHOT: [MessageHandler(filters.PHOTO, receive_sell_screenshot)],
             SELL_TELEBIRR: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), receive_sell_telebirr)],
-            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, handle_timeout)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
+            CallbackQueryHandler(cancel_button_handler, pattern="^user_cancel$"),
             restart_handler,
-            CallbackQueryHandler(cancel_button_handler, pattern="^user_cancel$")
         ],
-        conversation_timeout=900,  # 15 ደቂቃ (900 seconds)
-        per_message=False
     )
 
-    app.add_handler(restart_handler)
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(proof|approve|reject|reply)_"))
-    app.add_handler(MessageHandler(filters.User(user_id=ADMIN_ID) & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), admin_media_handler))
+    app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(proof_|approve_|reject_|reply_)"))
+    app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), admin_media_handler))
 
-    logger.info("Bot starting with auto-reconnect...")
-    app.run_polling(drop_pending_updates=True)
+    logger.info("Bot started successfully...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
