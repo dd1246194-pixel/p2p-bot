@@ -1,7 +1,17 @@
 import os
-import sqlite3
+import re
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+import sqlite3
+from typing import Optional
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -16,7 +26,7 @@ from telegram.ext import (
 # LOGGING CONFIGURATION
 # -----------------------------------------------------------------------------
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger("OKXETH_P2P_BOT")
@@ -25,7 +35,7 @@ logger = logging.getLogger("OKXETH_P2P_BOT")
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = 7798227927  # Owner/Admin Telegram ID
+ADMIN_ID = 7798227927
 DEFAULT_RATE = 184.0
 TELEBIRR_NUMBER = "0900253321"
 ADMIN_NAME = "Bereket"
@@ -33,6 +43,12 @@ ADMIN_WALLET_ADDRESS = "TMAbfELuLH7gGyjp6YgUV1WWpPYwhaE27V"
 
 MIN_USD = 10.0
 MAX_USD = 2100.0
+
+DB_FILE = "bot_data.db"
+
+# Regular Expressions for Validation
+TRC20_REGEX = r"^T[a-zA-Z0-9]{33}$"
+TELEBIRR_REGEX = r"^(09|07|\+2519|\+2517)\d{8}$"
 
 # -----------------------------------------------------------------------------
 # CONVERSATION STATES
@@ -52,45 +68,35 @@ MAX_USD = 2100.0
 # -----------------------------------------------------------------------------
 # DATABASE MANAGEMENT
 # -----------------------------------------------------------------------------
-DB_FILE = "bot_data.db"
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db() -> None:
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
             
-            # Rate Setting Table
+            # System settings table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value REAL
                 )
             ''')
-            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
             
-            # Users Tracking Table
+            # Admin pending actions state table (to persist state across restarts)
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                CREATE TABLE IF NOT EXISTS admin_actions (
+                    admin_id INTEGER PRIMARY KEY,
+                    action_type TEXT,
+                    target_user_id INTEGER
                 )
             ''')
-
-            # Orders Tracking Table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    trade_type TEXT,
-                    amount_usd REAL,
-                    total_birr REAL,
-                    status TEXT DEFAULT 'PENDING',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-
+            
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
             conn.commit()
             cursor.execute("VACUUM;")
     except Exception as e:
@@ -100,70 +106,52 @@ init_db()
 
 def db_get_rate() -> float:
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT value FROM settings WHERE key = 'rate'")
             row = cursor.fetchone()
-            return float(row[0]) if row else DEFAULT_RATE
+            return float(row["value"]) if row else DEFAULT_RATE
     except Exception as e:
         logger.error(f"Error fetching rate: {e}")
         return DEFAULT_RATE
 
 def db_set_rate(new_rate: float) -> bool:
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE settings SET value = ? WHERE key = 'rate'", (new_rate,))
             conn.commit()
             return True
     except Exception as e:
-        logger.error(f"Error setting rate: {e}")
+        logger.error(f"Error updating rate: {e}")
         return False
 
-def record_user(user_id: int, username: str) -> None:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Error recording user: {e}")
+def db_set_admin_action(admin_id: int, action_type: str, target_user_id: int) -> None:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO admin_actions (admin_id, action_type, target_user_id) VALUES (?, ?, ?)",
+            (admin_id, action_type, target_user_id)
+        )
+        conn.commit()
 
-def record_order(user_id: int, trade_type: str, amount_usd: float, total_birr: float) -> None:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO orders (user_id, trade_type, amount_usd, total_birr) VALUES (?, ?, ?, ?)",
-                (user_id, trade_type, amount_usd, total_birr)
-            )
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Error recording order: {e}")
+def db_get_admin_action(admin_id: int) -> Optional[dict]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT action_type, target_user_id FROM admin_actions WHERE admin_id = ?", (admin_id,))
+        row = cursor.fetchone()
+        if row:
+            return {"action_type": row["action_type"], "target_user_id": row["target_user_id"]}
+        return None
 
-def get_stats() -> dict:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            total_users = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*), SUM(total_birr) FROM orders")
-            row = cursor.fetchone()
-            total_orders = row[0] or 0
-            total_volume = row[1] or 0.0
-
-            return {
-                "users": total_users,
-                "orders": total_orders,
-                "volume": total_volume
-            }
-    except Exception as e:
-        logger.error(f"Error fetching stats: {e}")
-        return {"users": 0, "orders": 0, "volume": 0.0}
+def db_clear_admin_action(admin_id: int) -> None:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM admin_actions WHERE admin_id = ?", (admin_id,))
+        conn.commit()
 
 # -----------------------------------------------------------------------------
-# PERMANENT KEYBOARD & TEXTS
+# KEYBOARDS & LOCALIZATION
 # -----------------------------------------------------------------------------
 PERMANENT_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("🔄 Main Menu / Restart")]],
@@ -241,8 +229,10 @@ TEXTS = {
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "3️⃣ ዶላሩን እንደላኩ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
         ),
-        'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን የ <b>TRC20 Wallet Address</b> ጽፈው ይላኩልን፦",
+        'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን ትክክለኛ <b>TRC20 Wallet Address</b> ጽፈው ይላኩልን፦",
         'got_ss_sell': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n📱 አሁን ብር ገቢ የሚደረግበትን የ<b>Telebirr ስልክ ቁጥር እና ሙሉ ስም</b> ጽፈው ይላኩልን፦",
+        'invalid_wallet': "⚠️ <b>የተሳሳተ የ TRC20 አድራሻ!</b>\nእባክዎን በ 'T' የሚጀምርና ትክክለኛ የ TRC20 Wallet Address ያስገቡ፦",
+        'invalid_telebirr': "⚠️ <b>የተሳሳተ የስልክ ቁጥር!</b>\nእባክዎን ትክክለኛ የቴሌብር ስልክ ቁጥር ያስገቡ (ምሳሌ: 0912345678)፦",
         'complete': (
             "🎉 <b>ትዕዛዝዎ በስኬት ተላኳል!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -326,6 +316,8 @@ TEXTS = {
         ),
         'got_ss_buy': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n🎯 Amma Teessoo <b>TRC20 Wallet Address</b> keessan barreessitanii ergaa፦",
         'got_ss_sell': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n📱 Amma Lakkoofsa <b>Telebirr fi Maqaa Guutuu</b> keessan barreessitanii ergaa፦",
+        'invalid_wallet': "⚠️ <b>Teessoo TRC20 Dogoggoraa!</b>\nMaaloo teessoo sirrii 'T'n jalqabu galchaa፦",
+        'invalid_telebirr': "⚠️ <b>Lakkoofsa Bilbilaa Dogoggoraa!</b>\nMaaloo lakkoofsa Telebirr sirrii galchaa፦",
         'complete': (
             "🎉 <b>Ajajni keessan milkaa'inaan ergameera!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -409,6 +401,8 @@ TEXTS = {
         ),
         'got_ss_buy': "✅ <b>Screenshot received!</b>\n\n🎯 Now reply with your <b>TRC20 Wallet Address</b> to receive the USD:",
         'got_ss_sell': "✅ <b>Screenshot received!</b>\n\n📱 Now reply with your <b>Telebirr Phone Number & Full Name</b>:",
+        'invalid_wallet': "⚠️ <b>Invalid TRC20 Address!</b>\nPlease enter a valid TRC20 Wallet Address starting with 'T':",
+        'invalid_telebirr': "⚠️ <b>Invalid Phone Number!</b>\nPlease enter a valid Telebirr phone number:",
         'complete': (
             "🎉 <b>Your order has been submitted successfully!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -427,14 +421,10 @@ def get_txt(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return TEXTS.get(lang, TEXTS['am'])
 
 # -----------------------------------------------------------------------------
-# FLOW HANDLERS
+# USER CONVERSATION FLOW HANDLERS
 # -----------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    user = update.effective_user
-    if user:
-        record_user(user.id, user.username or "NoUsername")
-
     keyboard = [
         [
             InlineKeyboardButton("🇪🇹 አማርኛ", callback_data="lang_am"),
@@ -443,8 +433,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ]
     ]
     if update.message:
-        await update.message.reply_text("🌐 <b>Select Language / ቋንቋ ይምረጡ / Lugha Filadhaa፦</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        await update.message.reply_text("💡 <i>Main Menu / Restart</i>", reply_markup=PERMANENT_KEYBOARD, parse_mode="HTML")
+        await update.message.reply_text(
+            "🌐 <b>Select Language / ቋንቋ ይምረጡ / Lugha Filadhaa፦</b>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        await update.message.reply_text(
+            "💡 <i>Main Menu / Restart</i>",
+            reply_markup=PERMANENT_KEYBOARD,
+            parse_mode="HTML"
+        )
     return LANG
 
 async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -485,10 +483,11 @@ async def handle_support_msg(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user = update.effective_user
         txt = get_txt(context)
         if user:
+            username = f"@{user.username}" if user.username else "No Username"
             admin_msg = (
                 f"📩 <b>NEW SUPPORT QUESTION/MESSAGE!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>From:</b> @{user.username} (<code>{user.id}</code>)\n"
+                f"👤 <b>From:</b> {username} (<code>{user.id}</code>)\n"
                 f"📝 <b>Message:</b> {update.message.text}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
@@ -565,21 +564,22 @@ async def receive_sell_screenshot(update: Update, context: ContextTypes.DEFAULT_
 async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = get_txt(context)
     if update.message and update.message.text:
-        wallet = update.message.text
+        wallet = update.message.text.strip()
+        
+        # Security: Validate TRC20 Wallet Format
+        if not re.match(TRC20_REGEX, wallet):
+            await update.message.reply_text(txt['invalid_wallet'], parse_mode="HTML")
+            return WALLET_ADDRESS
+
         user = update.effective_user
-
-        usd = context.user_data.get('usd_amount', 0)
-        birr = context.user_data.get('total_birr', 0)
-
         if user:
-            record_order(user.id, "BUY", usd, birr)
-
+            username = f"@{user.username}" if user.username else "No Username"
             admin_msg = (
                 f"🚨 <b>NEW BUY ORDER RECEIVED!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
-                f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
-                f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
+                f"👤 <b>User:</b> {username} (<code>{user.id}</code>)\n"
+                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
                 f"📱 <b>Payment Method:</b> <code>Telebirr</code>\n"
                 f"📍 <b>Payout Wallet:</b> <code>{wallet}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
@@ -598,21 +598,17 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = get_txt(context)
     if update.message and update.message.text:
-        telebirr_info = update.message.text
+        telebirr_info = update.message.text.strip()
         user = update.effective_user
-
-        usd = context.user_data.get('usd_amount', 0)
-        birr = context.user_data.get('total_birr', 0)
-
+        
         if user:
-            record_order(user.id, "SELL", usd, birr)
-
+            username = f"@{user.username}" if user.username else "No Username"
             admin_msg = (
                 f"🚨 <b>NEW SELL ORDER RECEIVED!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
-                f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
-                f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
+                f"👤 <b>User:</b> {username} (<code>{user.id}</code>)\n"
+                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
                 f"📱 <b>Payout Telebirr:</b> <code>{telebirr_info}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
@@ -628,75 +624,67 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
     return SELL_TELEBIRR
 
 # -----------------------------------------------------------------------------
-# ADMIN ONLY COMMANDS & DECISIONS
+# ADMIN ACTIONS & COMMAND HANDLERS
 # -----------------------------------------------------------------------------
-async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
-        return
-    
-    stats = get_stats()
-    current_rate = db_get_rate()
-
-    dashboard_text = (
-        f"📊 <b>ADMIN CONTROL PANEL</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 <b>Total Bot Users:</b> <code>{stats['users']}</code>\n"
-        f"📦 <b>Total Orders Submitted:</b> <code>{stats['orders']}</code>\n"
-        f"💵 <b>Total Volume (ETB):</b> <code>{stats['volume']:,.2f} ETB</code>\n"
-        f"📈 <b>Current Exchange Rate:</b> <code>1 USD = {current_rate} ETB</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <i>Rate jijjiiruuf: `/setrate 185` jedhii ergi.</i>"
-    )
-    await update.message.reply_text(dashboard_text, parse_mode="HTML")
-
 async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
+    """Allows Admin to set new rate using /setrate 185.5"""
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
-        await update.message.reply_text("⚠️ <b>Dogoggora:</b> Maaloo gattii haaraa galchaa!\nFakkeenya: `/setrate 185.5`", parse_mode="HTML")
+        await update.message.reply_text("⚠️ **አጠቃቀም:** `/setrate <አዲስ የምንዛሬ ተመን>`\nምሳሌ፦ `/setrate 185.5`", parse_mode="Markdown")
         return
-
+    
     try:
         new_rate = float(context.args[0])
         if db_set_rate(new_rate):
-            await update.message.reply_text(f"✅ Gattiin jijjiarraa milkaa'inaan <b>1 USD = {new_rate} ETB</b>'tti jijjiirameera!", parse_mode="HTML")
+            await update.message.reply_text(f"✅ የምንዛሬ ተመኑ በስኬት ወደ **1 USD = {new_rate} ETB** ተቀይሯል!", parse_mode="Markdown")
         else:
-            await update.message.reply_text("❌ Gattii jijjiiruu irratti dogoggorri uumameera.")
+            await update.message.reply_text("❌ ተመኑን በሚቀየሩበት ጊዜ ስህተት ተፈጥሯል።")
     except ValueError:
-        await update.message.reply_text("⚠️ Maaloo lakkoofsa sirrii galchaa!")
+        await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር መጠን ያስገቡ።")
 
 async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if query:
-        await query.answer()
-        data = query.data.split("_")
-        action = data[0]
-        target_user_id = int(data[1])
+    if not query or not update.effective_user or update.effective_user.id != ADMIN_ID:
+        await query.answer("❌ You are not authorized to use this action.", show_alert=True)
+        return
 
-        if action == "proof":
-            context.bot_data['proof_target_id'] = target_user_id
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📸 <b>ለተጠቃሚ ID <code>{target_user_id}</code> የምትልከውን የክፍያ ደረሰኝ/Proof (Screenshot) አሁን ላክ፦</b>",
-                parse_mode="HTML"
-            )
-        elif action == "approve":
-            await context.bot.send_message(chat_id=target_user_id, text="🎉 <b>ትዕዛዝዎ በአድሚን ተረጋግጦ ተጠናቋል! / Your order has been APPROVED!</b>", parse_mode="HTML")
-            await query.edit_message_caption(caption=(query.message.caption or query.message.text or "") + "\n\n✅ <b>STATUS: APPROVED (No Proof)</b>", parse_mode="HTML")
-        elif action == "reject":
-            await context.bot.send_message(chat_id=target_user_id, text="❌ <b>ትዕዛዝዎ አልፀደቀም። / Your order has been REJECTED.</b>", parse_mode="HTML")
-            await query.edit_message_caption(caption=(query.message.caption or query.message.text or "") + "\n\n❌ <b>STATUS: REJECTED</b>", parse_mode="HTML")
-        elif action == "reply":
-            context.bot_data['reply_target_id'] = target_user_id
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"✍️ <b>ለተጠቃሚ ID <code>{target_user_id}</code> መላክ የሚፈልጉትን መልእክት ጽፈው ይላኩ፦</b>", parse_mode="HTML")
+    await query.answer()
+    data = query.data.split("_")
+    action = data[0]
+    target_user_id = int(data[1])
+
+    if action == "proof":
+        db_set_admin_action(ADMIN_ID, "proof", target_user_id)
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📸 <b>ለተጠቃሚ ID <code>{target_user_id}</code> የምትልከውን የክፍያ ደረሰኝ/Proof (Screenshot) አሁን ላክ፦</b>",
+            parse_mode="HTML"
+        )
+    elif action == "approve":
+        await context.bot.send_message(chat_id=target_user_id, text="🎉 <b>ትዕዛዝዎ በአድሚን ተረጋግጦ ተጠናቋል! / Your order has been APPROVED!</b>", parse_mode="HTML")
+        await query.edit_message_caption(caption=(query.message.caption or query.message.text or "") + "\n\n✅ <b>STATUS: APPROVED (Quick)</b>", parse_mode="HTML")
+    elif action == "reject":
+        await context.bot.send_message(chat_id=target_user_id, text="❌ <b>ትዕዛዝዎ አልፀደቀም። / Your order has been REJECTED.</b>", parse_mode="HTML")
+        await query.edit_message_caption(caption=(query.message.caption or query.message.text or "") + "\n\n❌ <b>STATUS: REJECTED</b>", parse_mode="HTML")
+    elif action == "reply":
+        db_set_admin_action(ADMIN_ID, "reply", target_user_id)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✍️ <b>ለተጠቃሚ ID <code>{target_user_id}</code> መላክ የሚፈልጉትን መልእክት ጽፈው ይላኩ፦</b>", parse_mode="HTML")
 
 async def admin_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
         return
 
-    proof_target_id = context.bot_data.get('proof_target_id')
-    if proof_target_id and update.message.photo:
+    admin_action = db_get_admin_action(ADMIN_ID)
+    if not admin_action:
+        return
+
+    action_type = admin_action["action_type"]
+    target_user_id = admin_action["target_user_id"]
+
+    # Handle Sending Proof Photo
+    if action_type == "proof" and update.message.photo:
         photo_id = update.message.photo[-1].file_id
         caption_text = (
             "🎉 <b>ትዕዛዝዎ በስኬት ተጠናቋል! (ORDER COMPLETED)</b>\n"
@@ -704,21 +692,21 @@ async def admin_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🧾 <b>የክፍያ ማረጋገጫ ደረሰኝ (Payment Proof) ከላይ ተያይዟል።</b>\n"
             "ስላገለገልንዎት ደስተኞች ነን! 🙏"
         )
-        await context.bot.send_photo(chat_id=proof_target_id, photo=photo_id, caption=caption_text, parse_mode="HTML")
-        await update.message.reply_text(f"✅ የክፍያ Proof ደረሰኝ ለተጠቃሚ ID <code>{proof_target_id}</code> በስኬት ተላኳል!", parse_mode="HTML")
-        context.bot_data.pop('proof_target_id', None)
+        await context.bot.send_photo(chat_id=target_user_id, photo=photo_id, caption=caption_text, parse_mode="HTML")
+        await update.message.reply_text(f"✅ የክፍያ Proof ደረሰኝ ለተጠቃሚ ID <code>{target_user_id}</code> በስኬት ተላኳል!", parse_mode="HTML")
+        db_clear_admin_action(ADMIN_ID)
         return
 
-    reply_target_id = context.bot_data.get('reply_target_id')
-    if reply_target_id and update.message.text:
+    # Handle Text Reply
+    if action_type == "reply" and update.message.text:
         reply_text = update.message.text
         await context.bot.send_message(
-            chat_id=reply_target_id,
+            chat_id=target_user_id,
             text=f"💬 <b>ከአድሚን የተላከ መልእክት / Admin Message:</b>\n━━━━━━━━━━━━━━━━━━━━━━\n{reply_text}",
             parse_mode="HTML"
         )
-        await update.message.reply_text(f"✅ መልእክትዎ ለተጠቃሚ ID <code>{reply_target_id}</code> በስኬት ተላኳል!", parse_mode="HTML")
-        context.bot_data.pop('reply_target_id', None)
+        await update.message.reply_text(f"✅ መልእክትዎ ለተጠቃሚ ID <code>{target_user_id}</code> በስኬት ተላኳል!", parse_mode="HTML")
+        db_clear_admin_action(ADMIN_ID)
 
 async def cancel_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query and update.callback_query.message:
@@ -738,7 +726,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # -----------------------------------------------------------------------------
 def main() -> None:
     if not BOT_TOKEN:
-        logger.critical("TELEGRAM_BOT_TOKEN missing.")
+        logger.critical("TELEGRAM_BOT_TOKEN missing from environment variables.")
         return
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -764,14 +752,17 @@ def main() -> None:
         ],
     )
 
-    app.add_handler(CommandHandler("admin", admin_dashboard))
+    # Admin Command Handlers
     app.add_handler(CommandHandler("setrate", set_rate_command))
 
+    # User Flow Handlers
     app.add_handler(conv_handler)
+    
+    # Admin Interaction Handlers
     app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(proof_|approve_|reject_|reply_)"))
     app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), admin_media_handler))
 
-    logger.info("Bot started successfully...")
+    logger.info("OKXETH P2P Bot initialised and polling...")
     app.run_polling()
 
 if __name__ == "__main__":
