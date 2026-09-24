@@ -25,7 +25,7 @@ logger = logging.getLogger("OKXETH_P2P_BOT")
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = 7798227927
+ADMIN_ID = 7798227927  # Owner/Admin Telegram ID
 DEFAULT_RATE = 184.0
 TELEBIRR_NUMBER = "0900253321"
 ADMIN_NAME = "Bereket"
@@ -50,7 +50,7 @@ MAX_USD = 2100.0
 ) = range(9)
 
 # -----------------------------------------------------------------------------
-# DATABASE MANAGEMENT (WITH VACUUM & WAL FOR SPACE OPTIMIZATION)
+# DATABASE MANAGEMENT
 # -----------------------------------------------------------------------------
 DB_FILE = "bot_data.db"
 
@@ -58,7 +58,9 @@ def init_db() -> None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL;")  # Speed & Space optimization
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            # Rate Setting Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -66,8 +68,31 @@ def init_db() -> None:
                 )
             ''')
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
+            
+            # Users Tracking Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Orders Tracking Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    trade_type TEXT,
+                    amount_usd REAL,
+                    total_birr REAL,
+                    status TEXT DEFAULT 'PENDING',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             conn.commit()
-            cursor.execute("VACUUM;")  # Shrink database size
+            cursor.execute("VACUUM;")
     except Exception as e:
         logger.error(f"Error initializing DB: {e}")
 
@@ -83,6 +108,59 @@ def db_get_rate() -> float:
     except Exception as e:
         logger.error(f"Error fetching rate: {e}")
         return DEFAULT_RATE
+
+def db_set_rate(new_rate: float) -> bool:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE settings SET value = ? WHERE key = 'rate'", (new_rate,))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error setting rate: {e}")
+        return False
+
+def record_user(user_id: int, username: str) -> None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error recording user: {e}")
+
+def record_order(user_id: int, trade_type: str, amount_usd: float, total_birr: float) -> None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO orders (user_id, trade_type, amount_usd, total_birr) VALUES (?, ?, ?, ?)",
+                (user_id, trade_type, amount_usd, total_birr)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error recording order: {e}")
+
+def get_stats() -> dict:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*), SUM(total_birr) FROM orders")
+            row = cursor.fetchone()
+            total_orders = row[0] or 0
+            total_volume = row[1] or 0.0
+
+            return {
+                "users": total_users,
+                "orders": total_orders,
+                "volume": total_volume
+            }
+    except Exception as e:
+        logger.error(f"Error fetching stats: {e}")
+        return {"users": 0, "orders": 0, "volume": 0.0}
 
 # -----------------------------------------------------------------------------
 # PERMANENT KEYBOARD & TEXTS
@@ -344,7 +422,6 @@ TEXTS = {
     }
 }
 
-# Helper to get current user language
 def get_txt(context: ContextTypes.DEFAULT_TYPE) -> dict:
     lang = context.user_data.get('lang', 'am')
     return TEXTS.get(lang, TEXTS['am'])
@@ -353,7 +430,11 @@ def get_txt(context: ContextTypes.DEFAULT_TYPE) -> dict:
 # FLOW HANDLERS
 # -----------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()  # Clear cache to save memory
+    context.user_data.clear()
+    user = update.effective_user
+    if user:
+        record_user(user.id, user.username or "NoUsername")
+
     keyboard = [
         [
             InlineKeyboardButton("🇪🇹 አማርኛ", callback_data="lang_am"),
@@ -487,13 +568,18 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         wallet = update.message.text
         user = update.effective_user
 
+        usd = context.user_data.get('usd_amount', 0)
+        birr = context.user_data.get('total_birr', 0)
+
         if user:
+            record_order(user.id, "BUY", usd, birr)
+
             admin_msg = (
                 f"🚨 <b>NEW BUY ORDER RECEIVED!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
-                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
-                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
+                f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
                 f"📱 <b>Payment Method:</b> <code>Telebirr</code>\n"
                 f"📍 <b>Payout Wallet:</b> <code>{wallet}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
@@ -514,13 +600,19 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
     if update.message and update.message.text:
         telebirr_info = update.message.text
         user = update.effective_user
+
+        usd = context.user_data.get('usd_amount', 0)
+        birr = context.user_data.get('total_birr', 0)
+
         if user:
+            record_order(user.id, "SELL", usd, birr)
+
             admin_msg = (
                 f"🚨 <b>NEW SELL ORDER RECEIVED!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
-                f"💵 <b>Amount:</b> <code>${context.user_data.get('usd_amount'):,.2f} USD</code>\n"
-                f"💰 <b>Total Birr:</b> <code>{context.user_data.get('total_birr'):,.2f} ETB</code>\n"
+                f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
+                f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
                 f"📱 <b>Payout Telebirr:</b> <code>{telebirr_info}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
@@ -536,8 +628,44 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
     return SELL_TELEBIRR
 
 # -----------------------------------------------------------------------------
-# ADMIN ACTIONS HANDLER
+# ADMIN ONLY COMMANDS & DECISIONS
 # -----------------------------------------------------------------------------
+async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
+        return
+    
+    stats = get_stats()
+    current_rate = db_get_rate()
+
+    dashboard_text = (
+        f"📊 <b>ADMIN CONTROL PANEL</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 <b>Total Bot Users:</b> <code>{stats['users']}</code>\n"
+        f"📦 <b>Total Orders Submitted:</b> <code>{stats['orders']}</code>\n"
+        f"💵 <b>Total Volume (ETB):</b> <code>{stats['volume']:,.2f} ETB</code>\n"
+        f"📈 <b>Current Exchange Rate:</b> <code>1 USD = {current_rate} ETB</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <i>Rate jijjiiruuf: `/setrate 185` jedhii ergi.</i>"
+    )
+    await update.message.reply_text(dashboard_text, parse_mode="HTML")
+
+async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
+        return
+    
+    if not context.args:
+        await update.message.reply_text("⚠️ <b>Dogoggora:</b> Maaloo gattii haaraa galchaa!\nFakkeenya: `/setrate 185.5`", parse_mode="HTML")
+        return
+
+    try:
+        new_rate = float(context.args[0])
+        if db_set_rate(new_rate):
+            await update.message.reply_text(f"✅ Gattiin jijjiarraa milkaa'inaan <b>1 USD = {new_rate} ETB</b>'tti jijjiirameera!", parse_mode="HTML")
+        else:
+            await update.message.reply_text("❌ Gattii jijjiiruu irratti dogoggorri uumameera.")
+    except ValueError:
+        await update.message.reply_text("⚠️ Maaloo lakkoofsa sirrii galchaa!")
+
 async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query:
@@ -567,7 +695,6 @@ async def admin_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID:
         return
 
-    # Handle Sending Proof Photo
     proof_target_id = context.bot_data.get('proof_target_id')
     if proof_target_id and update.message.photo:
         photo_id = update.message.photo[-1].file_id
@@ -582,7 +709,6 @@ async def admin_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.bot_data.pop('proof_target_id', None)
         return
 
-    # Handle Text Reply
     reply_target_id = context.bot_data.get('reply_target_id')
     if reply_target_id and update.message.text:
         reply_text = update.message.text
@@ -637,6 +763,9 @@ def main() -> None:
             restart_handler,
         ],
     )
+
+    app.add_handler(CommandHandler("admin", admin_dashboard))
+    app.add_handler(CommandHandler("setrate", set_rate_command))
 
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(proof_|approve_|reject_|reply_)"))
