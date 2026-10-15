@@ -1,6 +1,12 @@
 import os
+import io
+import re
 import sqlite3
 import logging
+import numpy as np
+from PIL import Image
+import easyocr
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,6 +27,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("OKXETH_P2P_BOT")
 
+# AI OCR Reader Initialization (English & Digits)
+logger.info("Initializing AI OCR Engine...")
+ocr_reader = easyocr.Reader(['en'], gpu=False)
+
 # -----------------------------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------------------------
@@ -31,8 +41,10 @@ TELEBIRR_NUMBER = "0900253321"
 ADMIN_NAME = "Bereket"
 ADMIN_WALLET_ADDRESS = "TMAbfELuLH7gGyjp6YgUV1WWpPYwhaE27V"
 
-MIN_USD = 10.0
-MAX_USD = 2100.0
+MIN_USD = 20.0
+MAX_USD = 600.0
+
+ORDER_TIMEOUT_SECONDS = 30 * 60  # 30 ደቂቃ (1800 ሰከንድ)
 
 # -----------------------------------------------------------------------------
 # CONVERSATION STATES
@@ -41,13 +53,14 @@ MAX_USD = 2100.0
     LANG,
     TRADE_TYPE,
     AMOUNT,
+    BUY_PAYMENT_CHOICE,
     PAYMENT_CHOICE,
     SCREENSHOT,
     WALLET_ADDRESS,
     SELL_SCREENSHOT,
     SELL_TELEBIRR,
     SUPPORT_MSG,
-) = range(9)
+) = range(10)
 
 # -----------------------------------------------------------------------------
 # DATABASE MANAGEMENT
@@ -60,7 +73,6 @@ def init_db() -> None:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
             
-            # Rate Setting Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -69,7 +81,6 @@ def init_db() -> None:
             ''')
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate', ?)", (DEFAULT_RATE,))
             
-            # Users Tracking Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -78,7 +89,6 @@ def init_db() -> None:
                 )
             ''')
 
-            # Orders Tracking Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,6 +173,60 @@ def get_stats() -> dict:
         return {"users": 0, "orders": 0, "volume": 0.0}
 
 # -----------------------------------------------------------------------------
+# AI SCREENSHOT VERIFIER (OCR LOGIC)
+# -----------------------------------------------------------------------------
+async def verify_screenshot_ai(photo_bytes: bytes, expected_amount: float) -> tuple[bool, str]:
+    """AI OCR በመጠቀም በስክሪንሾቱ ላይ የብር መጠን ማረጋገጥ"""
+    try:
+        image = Image.open(io.BytesIO(photo_bytes))
+        image_np = np.array(image)
+        results = ocr_reader.readtext(image_np)
+        
+        extracted_text = " ".join([text for (_, text, _) in results])
+        logger.info(f"AI Extracted Text: {extracted_text}")
+
+        # የተፈለገውን ብር መጠን የመፈለግ Logic (ለምሳሌ: 3680 ወይም 3680.00)
+        formatted_amount_1 = f"{expected_amount:.2f}"
+        formatted_amount_2 = f"{int(expected_amount)}" if expected_amount.is_integer() else f"{expected_amount:.2f}"
+
+        if formatted_amount_1 in extracted_text or formatted_amount_2 in extracted_text:
+            return True, "✅ **AI Verification:** Amount Matched in Screenshot!"
+        else:
+            return False, "⚠️ **AI Verification Warning:** Expected amount NOT detected clearly. Please verify manually!"
+    except Exception as e:
+        logger.error(f"AI Verification Error: {e}")
+        return False, "⚠️ **AI Verification Warning:** Could not read image properly. Please verify manually."
+
+# -----------------------------------------------------------------------------
+# TIMEOUT JOB FUNCTION
+# -----------------------------------------------------------------------------
+async def order_timeout_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    chat_id = job.data["chat_id"]
+    message_id = job.data.get("message_id")
+
+    if message_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Could not delete message {message_id}: {e}")
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "⏰ <b>የ 30 ደቂቃ ጊዜዎ አብቅቷል!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ትዕዛዝዎ አውቶማቲክ ተሰርዟል። እባክዎን እንደገና ለመጀመር /start ይበሉ።"
+        ),
+        parse_mode="HTML"
+    )
+
+def cancel_existing_timer(context: ContextTypes.DEFAULT_TYPE) -> None:
+    current_jobs = context.job_queue.get_jobs_by_name("order_timer")
+    for job in current_jobs:
+        job.schedule_removal()
+
+# -----------------------------------------------------------------------------
 # PERMANENT KEYBOARD & TEXTS
 # -----------------------------------------------------------------------------
 PERMANENT_KEYBOARD = ReplyKeyboardMarkup(
@@ -178,7 +242,7 @@ TEXTS = {
             "👋 <b>እንኳን ወደ አስተማማኙ የ P2P የምንዛሬ ቦት በሰላም መጡ!</b>\n\n"
             "📊 <b>የዛሬው የምንዛሬ ተመን፦</b>\n"
             "└ <code>1 USD = {rate:,.2f} ETB</code>\n\n"
-            "💳 <b>የክፍያ መንገድ:</b> <code>Telebirr (ቴሌብር ብቻ)</code>\n"
+            "💳 <b>የክፍያ መንገዶች:</b> <code>Telebirr | Mastercard | Binance Pay</code>\n"
             "⚡ <i>ፈጣን፣ አስተማማኝ እና ሙሉ ደህንነቱ የተጠበቀ አገልግሎት!</i>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "👇 <b>እባክዎን ማድረግ የሚፈልጉትን ይምረጡ፦</b>"
@@ -186,7 +250,7 @@ TEXTS = {
         'enter_amount_buy': (
             "🟢 <b>የግዢ መጠን ያስገቡ (BUY USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>የግዢ ወሰን፦</b>\n"
+            "📌 <b>የቀን የግዢ ወሰን፦</b>\n"
             "├ <b>አነስተኛ:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>ከፍተኛ:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>መግዛት የሚፈልጉትን የ USD መጠን በቁጥር ብቻ ያስገቡ፦</i>"
@@ -194,19 +258,24 @@ TEXTS = {
         'enter_amount_sell': (
             "🔴 <b>የመሸጫ መጠን ያስገቡ (SELL USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>የመሸጫ ወሰን፦</b>\n"
+            "📌 <b>የቀን የመሸጫ ወሰን፦</b>\n"
             "├ <b>አነስተኛ:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>ከፍተኛ:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>መሸጥ የሚፈልጉትን የ USD መጠን በቁጥር ብቻ ያስገቡ፦</i>"
         ),
-        'invalid_num': "⚠️ <b>የተሳሳተ ቁጥር!</b>\nእባክዎን ከ <b>${min:,.2f}</b> እስከ <b>${max:,.2f} USD</b> ባለው ወሰን ውስጥ ብቻ ያስገቡ፦",
+        'invalid_num': "⚠️ <b>የተሳሳተ ቁጥር!</b>\nእባክዎን ከ <b>${min:,.2f}</b> እስከ <b>${max:,.2f} USD</b> ባለው የቀን ወሰን ውስጥ ብቻ ያስገቡ፦",
+        'select_pay_method': (
+            "💳 <b>የክፍያ መንገድ ይምረጡ (Payment Method)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ለመግዛት የሚፈልጉበትን የክፍያ አማራጭ ከታች ይምረጡ፦"
+        ),
         'summary_buy': (
             "🧾 <b>የግዢ ትዕዛዝ ማጠቃለያ (BUY RECEIPT)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "💵 <b>የሚገዙት መጠን:</b> <code>${usd:,.2f} USD</code>\n"
             "📈 <b>የምንዛሬ ተመን:</b> <code>{rate:,.2f} ETB</code>\n"
             "💰 <b>ጠቅላላ የሚከፍሉት:</b> <code>{birr:,.2f} ETB</code>\n"
-            "📱 <b>የክፍያ መንገድ:</b> <code>Telebirr</code>\n"
+            "📱 <b>የክፍያ መንገድ:</b> <code>{method}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "ለማረጋገጥና ወደ ክፍያ ለመሄድ ከታች ያለውን አዝራር ይጫኑ፦"
         ),
@@ -221,28 +290,27 @@ TEXTS = {
             "ለማረጋገጥና ወደ ክፍያ ለመሄድ ከታች ያለውን አዝራር ይጫኑ፦"
         ),
         'pay_instruct_buy': (
-            "📱 <b>የ TELEBIRR ክፍያ መመሪያ</b>\n"
+            "⏳ <b>የ 30 ደቂቃ ቆጠራ ጀምሯል!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ ወደ Telebirr መተግበሪያዎ ወይም *127# ይሂዱ።\n"
-            "2️⃣ ወደሚከተለው ስልክ ቁጥር ክፍያ ይፈጽሙ፦\n"
-            "👉 <code>{num}</code>\n"
+            "📱 <b>የክፍያ መንገድ:</b> <code>{method}</code>\n"
+            "👉 <b>የአድሚን ክፍያ አድራሻ/ስልክ:</b> <code>{num}</code>\n"
             "👤 <b>ስም:</b> <code>{name}</code>\n\n"
             "💵 <b>የሚከፍሉት ትክክለኛ መጠን:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ ክፍያውን እንደፈጸሙ የደረሰኙን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+            "⚠️ <i>በ 30 ደቂቃ ውስጥ ካልከፈሉ ይህ መልእክት አውቶማቲክ ይጸዳል (Clear ይሆናል)።</i>\n"
+            "ክፍያውን እንደፈጸሙ የደረሰኙን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ፦"
         ),
         'pay_instruct_sell': (
-            "🌐 <b>የ USDT (TRC20) መላኪያ መመሪያ</b>\n"
+            "⏳ <b>የ 30 ደቂቃ ቆጠራ ጀምሯል!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ ወደ የትኛውም ዋሌትዎ (Binance, Trust Wallet, etc.) ይሂዱ።\n"
-            "2️⃣ ወደሚከተለው TRC20 Wallet Address ይላኩ፦\n"
-            "👉 <code>{wallet}</code>\n\n"
+            "🌐 <b>TRC20 Wallet:</b> <code>{wallet}</code>\n"
             "💵 <b>የሚልኩት ትክክለኛ መጠን:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ ዶላሩን እንደላኩ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ።"
+            "⚠️ <i>በ 30 ደቂቃ ውስጥ ካልላኩ ይህ መልእክት አውቶማቲክ ይጸዳል (Clear ይሆናል)።</i>\n"
+            "ከተላከ በኋላ የመላኪያውን <b>Screenshot (ፎቶ)</b> እዚህ ይላኩ፦"
         ),
-        'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን የ <b>TRC20 Wallet Address</b> ጽፈው ይላኩልን፦",
-        'got_ss_sell': "✅ <b>ደረሰኝዎ ደርሶናል!</b>\n\n📱 አሁን ብር ገቢ የሚደረግበትን የ<b>Telebirr ስልክ ቁጥር እና ሙሉ ስም</b> ጽፈው ይላኩልን፦",
+        'got_ss_buy': "✅ <b>ደረሰኝዎ ደርሶናል! AI ኦዲት በማድረግ ላይ ነው...</b>\n\n🎯 አሁን ዶላሩ (USDT) ገቢ የሚደረግበትን የ <b>TRC20 Wallet Address ወይም Binance Pay ID</b> ጽፈው ይላኩልን፦",
+        'got_ss_sell': "✅ <b>ደረሰኝዎ ደርሶናል! AI ኦዲት በማድረግ ላይ ነው...</b>\n\n📱 አሁን ብር ገቢ የሚደረግበትን የ<b>Telebirr ስልክ ቁጥር እና ሙሉ ስም</b> ጽፈው ይላኩልን፦",
         'complete': (
             "🎉 <b>ትዕዛዝዎ በስኬት ተላኳል!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -261,7 +329,7 @@ TEXTS = {
             "👋 <b>Baga gara Bootii Jijjiarraa Gabaa P2P nagaadaan dhuftan!</b>\n\n"
             "📊 <b>Gattii Jijjiarraa Har'aa፦</b>\n"
             "└ <code>1 USD = {rate:,.2f} ETB</code>\n\n"
-            "💳 <b>Kaffaltii:</b> <code>Telebirr Qofa</code>\n"
+            "💳 <b>Kaffaltii:</b> <code>Telebirr | Mastercard | Binance Pay</code>\n"
             "⚡ <i>Saffisaa, Amanamaa fi Nageenyi isa kan eegame!</i>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "👇 <b>Maaloo waan raawwachuu barbaaddan filadhaa፦</b>"
@@ -269,7 +337,7 @@ TEXTS = {
         'enter_amount_buy': (
             "🟢 <b>Hanga Bitachuu Barbaaddan Galchaa (BUY USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>Hanga Bitinsa፦</b>\n"
+            "📌 <b>Daangaa Guyyaa፦</b>\n"
             "├ <b>Xiqqaa:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>Guddaa:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>Hanga USD bitachuu barbaaddan lakkoofsaan galchaa፦</i>"
@@ -277,19 +345,24 @@ TEXTS = {
         'enter_amount_sell': (
             "🔴 <b>Hanga Gurguruu Barbaaddan Galchaa (SELL USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>Hanga Gurgurtaaa፦</b>\n"
+            "📌 <b>Daangaa Guyyaa፦</b>\n"
             "├ <b>Xiqqaa:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>Guddaa:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>Hanga USD gurguruu barbaaddan lakkoofsaan galchaa፦</i>"
         ),
         'invalid_num': "⚠️ <b>Lakkoofsa Dogoggoraa!</b>\nMaaloo <b>${min:,.2f}</b> hanga <b>${max:,.2f} USD</b> jiddutti galchaa፦",
+        'select_pay_method': (
+            "💳 <b>Karaa Kaffaltii Filadhaa</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Mala kaffaltii bitachuu barbaaddan filadhaa፦"
+        ),
         'summary_buy': (
             "🧾 <b>Cuunfaa Ajaja Bitinsaa (BUY RECEIPT)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "💵 <b>Hanga Bittaatan:</b> <code>${usd:,.2f} USD</code>\n"
             "📈 <b>Gattii Jijjiarraa:</b> <code>{rate:,.2f} ETB</code>\n"
             "💰 <b>Waliigala Kaffaltii:</b> <code>{birr:,.2f} ETB</code>\n"
-            "📱 <b>Kaffaltii:</b> <code>Telebirr</code>\n"
+            "📱 <b>Kaffaltii:</b> <code>{method}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "Mirkaneessuufi gara kaffaltiitti darbuuf button gadii cuqaasaa፦"
         ),
@@ -304,27 +377,26 @@ TEXTS = {
             "Mirkaneessuufi gara kaffaltiitti darbuuf button gadii cuqaasaa፦"
         ),
         'pay_instruct_buy': (
-            "📱 <b>Qajeelfama Kaffaltii TELEBIRR</b>\n"
+            "⏳ <b>Yeroon Daqiiqaa 30 Jalqabeera!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ Gara Appii Telebirr ykn *127# deemaa.\n"
-            "2️⃣ Lakkoofsa kanaan kaffaltii raawwadhaa፦\n"
-            "👉 <code>{num}</code>\n"
+            "📱 <b>Kaffaltii:</b> <code>{method}</code>\n"
+            "👉 <b>Teessoo/Lakkoofsa Admin:</b> <code>{num}</code>\n"
             "👤 <b>Maqaa:</b> <code>{name}</code>\n\n"
             "💵 <b>Hanga Kaffaltii:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ Kaffaltii raawwattanii <b>Screenshot (Suraa)</b> asitti ergaa."
+            "⚠️ <i>Daqiiqaa 30 keessatti yoo kaffaltii erguu baattan ajajni kun ni haqama.</i>\n"
+            "Kaffaltii raawwattanii <b>Screenshot (Suraa)</b> asitti ergaa."
         ),
         'pay_instruct_sell': (
-            "🌐 <b>Qajeelfama Ergaa USDT (TRC20)</b>\n"
+            "⏳ <b>Yeroon Daqiiqaa 30 Jalqabeera!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ Gara Teessoo Wallet keessanii deemaa.\n"
-            "2️⃣ Teessoo TRC20 kanatti ergaa፦\n"
-            "👉 <code>{wallet}</code>\n\n"
+            "🌐 <b>TRC20 Wallet:</b> <code>{wallet}</code>\n"
             "💵 <b>Hanga Ergtan:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ Ergtanii <b>Screenshot (Suraa)</b> asitti ergaa."
+            "⚠️ <i>Daqiiqaa 30 keessatti yoo erguu baattan ajajni kun ni haqama.</i>\n"
+            "Ergtanii <b>Screenshot (Suraa)</b> asitti ergaa."
         ),
-        'got_ss_buy': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n🎯 Amma Teessoo <b>TRC20 Wallet Address</b> keessan barreessitanii ergaa፦",
+        'got_ss_buy': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n🎯 Amma Teessoo <b>TRC20 Wallet ykn Binance Pay ID</b> keessan barreessitanii ergaa፦",
         'got_ss_sell': "✅ <b>Nagaheen keessan nu gaheera!</b>\n\n📱 Amma Lakkoofsa <b>Telebirr fi Maqaa Guutuu</b> keessan barreessitanii ergaa፦",
         'complete': (
             "🎉 <b>Ajajni keessan milkaa'inaan ergameera!</b>\n"
@@ -344,7 +416,7 @@ TEXTS = {
             "👋 <b>Welcome to the trusted P2P Exchange Bot!</b>\n\n"
             "📊 <b>Today's Exchange Rate:</b>\n"
             "└ <code>1 USD = {rate:,.2f} ETB</code>\n\n"
-            "💳 <b>Payment Method:</b> <code>Telebirr Only</code>\n"
+            "💳 <b>Payment Methods:</b> <code>Telebirr | Mastercard | Binance Pay</code>\n"
             "⚡ <i>Fast, Secure, and Reliable Service!</i>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "👇 <b>Please select an option below:</b>"
@@ -352,7 +424,7 @@ TEXTS = {
         'enter_amount_buy': (
             "🟢 <b>Enter Amount to Buy (BUY USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>Trading Limits:</b>\n"
+            "📌 <b>Daily Limits:</b>\n"
             "├ <b>Min:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>Max:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>Type the amount in USD (numbers only):</i>"
@@ -360,19 +432,24 @@ TEXTS = {
         'enter_amount_sell': (
             "🔴 <b>Enter Amount to Sell (SELL USD)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 <b>Trading Limits:</b>\n"
+            "📌 <b>Daily Limits:</b>\n"
             "├ <b>Min:</b> <code>${min:,.2f} USD</code>\n"
             "└ <b>Max:</b> <code>${max:,.2f} USD</code>\n\n"
             "✍️ <i>Type the amount in USD (numbers only):</i>"
         ),
         'invalid_num': "⚠️ <b>Invalid Amount!</b>\nPlease enter between <b>${min:,.2f}</b> and <b>${max:,.2f} USD</b>:",
+        'select_pay_method': (
+            "💳 <b>Select Payment Method</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Choose your preferred payment method for purchasing:"
+        ),
         'summary_buy': (
             "🧾 <b>BUY RECEIPT SUMMARY</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "💵 <b>Buying Amount:</b> <code>${usd:,.2f} USD</code>\n"
             "📈 <b>Exchange Rate:</b> <code>{rate:,.2f} ETB</code>\n"
             "💰 <b>Total Payable:</b> <code>{birr:,.2f} ETB</code>\n"
-            "📱 <b>Payment Method:</b> <code>Telebirr</code>\n"
+            "📱 <b>Payment Method:</b> <code>{method}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "Click the button below to confirm and proceed to payment:"
         ),
@@ -387,27 +464,26 @@ TEXTS = {
             "Click the button below to confirm and proceed:"
         ),
         'pay_instruct_buy': (
-            "📱 <b>TELEBIRR PAYMENT INSTRUCTIONS</b>\n"
+            "⏳ <b>30 Minutes Timer Started!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ Open your Telebirr App or dial *127#.\n"
-            "2️⃣ Make payment to this phone number:\n"
-            "👉 <code>{num}</code>\n"
+            "📱 <b>Payment Method:</b> <code>{method}</code>\n"
+            "👉 <b>Admin Pay Account/Phone:</b> <code>{num}</code>\n"
             "👤 <b>Name:</b> <code>{name}</code>\n\n"
             "💵 <b>Exact Amount to Pay:</b> <code>{birr:,.2f} ETB</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ Send the payment <b>Screenshot (Image)</b> here."
+            "⚠️ <i>If payment is not sent in 30 mins, this order will be cleared automatically.</i>\n"
+            "Send the payment <b>Screenshot (Image)</b> here."
         ),
         'pay_instruct_sell': (
-            "🌐 <b>USDT (TRC20) TRANSFER INSTRUCTIONS</b>\n"
+            "⏳ <b>30 Minutes Timer Started!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ Go to your crypto wallet (Binance, Trust Wallet, etc.).\n"
-            "2️⃣ Send to the following TRC20 Wallet Address:\n"
-            "👉 <code>{wallet}</code>\n\n"
+            "🌐 <b>TRC20 Wallet:</b> <code>{wallet}</code>\n"
             "💵 <b>Exact Amount to Send:</b> <code>${usd:,.2f} USDT</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "3️⃣ Send the transfer <b>Screenshot (Image)</b> here."
+            "⚠️ <i>If crypto is not sent in 30 mins, this order will be cleared automatically.</i>\n"
+            "Send the transfer <b>Screenshot (Image)</b> here."
         ),
-        'got_ss_buy': "✅ <b>Screenshot received!</b>\n\n🎯 Now reply with your <b>TRC20 Wallet Address</b> to receive the USD:",
+        'got_ss_buy': "✅ <b>Screenshot received!</b>\n\n🎯 Now reply with your <b>TRC20 Wallet Address or Binance Pay ID</b>:",
         'got_ss_sell': "✅ <b>Screenshot received!</b>\n\n📱 Now reply with your <b>Telebirr Phone Number & Full Name</b>:",
         'complete': (
             "🎉 <b>Your order has been submitted successfully!</b>\n"
@@ -430,6 +506,7 @@ def get_txt(context: ContextTypes.DEFAULT_TYPE) -> dict:
 # FLOW HANDLERS
 # -----------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cancel_existing_timer(context)
     context.user_data.clear()
     user = update.effective_user
     if user:
@@ -515,16 +592,54 @@ async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['total_birr'] = total_birr
         trade_type = context.user_data.get('trade_type', 'buy')
 
+        if trade_type == 'buy':
+            keyboard = [
+                [InlineKeyboardButton("📱 Telebirr", callback_data="pay_telebirr")],
+                [InlineKeyboardButton("💳 Mastercard", callback_data="pay_mastercard")],
+                [InlineKeyboardButton("🟡 Binance ID / Pay", callback_data="pay_binance")],
+                [InlineKeyboardButton(txt['btn_cancel'], callback_data="user_cancel")]
+            ]
+            await update.message.reply_text(txt['select_pay_method'], reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            return BUY_PAYMENT_CHOICE
+        else:
+            keyboard = [
+                [InlineKeyboardButton("አረጋግጥና ቀጥል ➡️ / Proceed", callback_data="proceed_pay")],
+                [InlineKeyboardButton(txt['btn_cancel'], callback_data="user_cancel")]
+            ]
+            msg = txt['summary_sell'].format(usd=usd_amount, rate=rate, birr=total_birr)
+            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            return PAYMENT_CHOICE
+
+    except ValueError:
+        await update.message.reply_text(txt['invalid_num'].format(min=MIN_USD, max=MAX_USD), parse_mode="HTML")
+        return AMOUNT
+
+async def select_buy_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query:
+        await query.answer()
+        txt = get_txt(context)
+        method = query.data.split("_")[1]
+        
+        method_names = {
+            "telebirr": "Telebirr",
+            "mastercard": "Mastercard",
+            "binance": "Binance Pay ID"
+        }
+        selected_method = method_names.get(method, "Telebirr")
+        context.user_data['payment_method'] = selected_method
+
+        usd_amount = context.user_data.get('usd_amount', 0)
+        total_birr = context.user_data.get('total_birr', 0)
+        rate = db_get_rate()
+
         keyboard = [
             [InlineKeyboardButton("አረጋግጥና ቀጥል ➡️ / Proceed", callback_data="proceed_pay")],
             [InlineKeyboardButton(txt['btn_cancel'], callback_data="user_cancel")]
         ]
-        msg = txt['summary_buy'].format(usd=usd_amount, rate=rate, birr=total_birr) if trade_type == 'buy' else txt['summary_sell'].format(usd=usd_amount, rate=rate, birr=total_birr)
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        msg = txt['summary_buy'].format(usd=usd_amount, rate=rate, birr=total_birr, method=selected_method)
+        await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         return PAYMENT_CHOICE
-    except ValueError:
-        await update.message.reply_text(txt['invalid_num'].format(min=MIN_USD, max=MAX_USD), parse_mode="HTML")
-        return AMOUNT
 
 async def payment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -534,22 +649,47 @@ async def payment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         trade_type = context.user_data.get('trade_type', 'buy')
         total_birr = context.user_data.get('total_birr', 0)
         usd_amount = context.user_data.get('usd_amount', 0)
+        method = context.user_data.get('payment_method', 'Telebirr')
 
         keyboard = [[InlineKeyboardButton(txt['btn_cancel'], callback_data="user_cancel")]]
 
         if trade_type == 'buy':
-            msg = txt['pay_instruct_buy'].format(birr=total_birr, num=TELEBIRR_NUMBER, name=ADMIN_NAME)
-            await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            msg = txt['pay_instruct_buy'].format(method=method, birr=total_birr, num=TELEBIRR_NUMBER, name=ADMIN_NAME)
+            sent_msg = await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            
+            context.job_queue.run_once(
+                order_timeout_callback,
+                when=ORDER_TIMEOUT_SECONDS,
+                data={"chat_id": update.effective_chat.id, "message_id": sent_msg.message_id},
+                name="order_timer"
+            )
             return SCREENSHOT
         else:
             msg = txt['pay_instruct_sell'].format(usd=usd_amount, wallet=ADMIN_WALLET_ADDRESS)
-            await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            sent_msg = await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            
+            context.job_queue.run_once(
+                order_timeout_callback,
+                when=ORDER_TIMEOUT_SECONDS,
+                data={"chat_id": update.effective_chat.id, "message_id": sent_msg.message_id},
+                name="order_timer"
+            )
             return SELL_SCREENSHOT
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = get_txt(context)
     if update.message and update.message.photo:
-        context.user_data['photo_file'] = update.message.photo[-1].file_id
+        photo = update.message.photo[-1]
+        context.user_data['photo_file'] = photo.file_id
+        
+        # Download Photo Bytes for AI Processing
+        photo_file_obj = await context.bot.get_file(photo.file_id)
+        photo_bytes = await photo_file_obj.download_as_bytearray()
+        
+        expected_birr = context.user_data.get('total_birr', 0.0)
+        match_success, ai_status_text = await verify_screenshot_ai(photo_bytes, expected_birr)
+        context.user_data['ai_status'] = ai_status_text
+
         await update.message.reply_text(txt['got_ss_buy'], parse_mode="HTML")
         return WALLET_ADDRESS
     return SCREENSHOT
@@ -557,7 +697,16 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def receive_sell_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = get_txt(context)
     if update.message and update.message.photo:
-        context.user_data['photo_file'] = update.message.photo[-1].file_id
+        photo = update.message.photo[-1]
+        context.user_data['photo_file'] = photo.file_id
+
+        photo_file_obj = await context.bot.get_file(photo.file_id)
+        photo_bytes = await photo_file_obj.download_as_bytearray()
+        
+        expected_usd = context.user_data.get('usd_amount', 0.0)
+        match_success, ai_status_text = await verify_screenshot_ai(photo_bytes, expected_usd)
+        context.user_data['ai_status'] = ai_status_text
+
         await update.message.reply_text(txt['got_ss_sell'], parse_mode="HTML")
         return SELL_TELEBIRR
     return SELL_SCREENSHOT
@@ -566,10 +715,13 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     txt = get_txt(context)
     if update.message and update.message.text:
         wallet = update.message.text
-        user = update.effective_user
+        cancel_existing_timer(context)
 
+        user = update.effective_user
         usd = context.user_data.get('usd_amount', 0)
         birr = context.user_data.get('total_birr', 0)
+        method = context.user_data.get('payment_method', 'Telebirr')
+        ai_status = context.user_data.get('ai_status', 'No AI Audit Data')
 
         if user:
             record_order(user.id, "BUY", usd, birr)
@@ -580,8 +732,10 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"👤 <b>User:</b> @{user.username} (<code>{user.id}</code>)\n"
                 f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
                 f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
-                f"📱 <b>Payment Method:</b> <code>Telebirr</code>\n"
-                f"📍 <b>Payout Wallet:</b> <code>{wallet}</code>\n"
+                f"📱 <b>Payment Method:</b> <code>{method}</code>\n"
+                f"📍 <b>Payout Address/Binance ID:</b> <code>{wallet}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 <b>AI AUDIT REPORT:</b>\n{ai_status}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             admin_btn = [
@@ -599,10 +753,12 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
     txt = get_txt(context)
     if update.message and update.message.text:
         telebirr_info = update.message.text
-        user = update.effective_user
+        cancel_existing_timer(context)
 
+        user = update.effective_user
         usd = context.user_data.get('usd_amount', 0)
         birr = context.user_data.get('total_birr', 0)
+        ai_status = context.user_data.get('ai_status', 'No AI Audit Data')
 
         if user:
             record_order(user.id, "SELL", usd, birr)
@@ -614,6 +770,8 @@ async def receive_sell_telebirr(update: Update, context: ContextTypes.DEFAULT_TY
                 f"💵 <b>Amount:</b> <code>${usd:,.2f} USD</code>\n"
                 f"💰 <b>Total Birr:</b> <code>{birr:,.2f} ETB</code>\n"
                 f"📱 <b>Payout Telebirr:</b> <code>{telebirr_info}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 <b>AI AUDIT REPORT:</b>\n{ai_status}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             admin_btn = [
@@ -645,7 +803,7 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"💵 <b>Total Volume (ETB):</b> <code>{stats['volume']:,.2f} ETB</code>\n"
         f"📈 <b>Current Exchange Rate:</b> <code>1 USD = {current_rate} ETB</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <i>Rate jijjiiruuf: `/setrate 185` jedhii ergi.</i>"
+        f"💡 <i>Rate ለመቀየር: `/setrate 185` ብለህ ላክ።</i>"
     )
     await update.message.reply_text(dashboard_text, parse_mode="HTML")
 
@@ -654,17 +812,17 @@ async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     
     if not context.args:
-        await update.message.reply_text("⚠️ <b>Dogoggora:</b> Maaloo gattii haaraa galchaa!\nFakkeenya: `/setrate 185.5`", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>ስህተት:</b> አዲሱን የምንዛሬ ተመን ያስገቡ!\nምሳሌ: `/setrate 185.5`", parse_mode="HTML")
         return
 
     try:
         new_rate = float(context.args[0])
         if db_set_rate(new_rate):
-            await update.message.reply_text(f"✅ Gattiin jijjiarraa milkaa'inaan <b>1 USD = {new_rate} ETB</b>'tti jijjiirameera!", parse_mode="HTML")
+            await update.message.reply_text(f"✅ የምንዛሬ ተመኑ በስኬት ወደ <b>1 USD = {new_rate} ETB</b> ተቀይሯል!", parse_mode="HTML")
         else:
-            await update.message.reply_text("❌ Gattii jijjiiruu irratti dogoggorri uumameera.")
+            await update.message.reply_text("❌ ተመኑን በሚቀየሩበት ጊዜ ስህተት ተፈጥሯል።")
     except ValueError:
-        await update.message.reply_text("⚠️ Maaloo lakkoofsa sirrii galchaa!")
+        await update.message.reply_text("⚠️ እባክዎን ትክክለኛ ቁጥር ያስገቡ!")
 
 async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -721,6 +879,7 @@ async def admin_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.bot_data.pop('reply_target_id', None)
 
 async def cancel_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cancel_existing_timer(context)
     if update.callback_query and update.callback_query.message:
         await update.callback_query.answer()
         await update.callback_query.message.edit_text("❌ <b>ትዕዛዙ ተሰርዟል። / Cancelled.</b>\nእንደገና ለመጀመር /start ይበሉ።", parse_mode="HTML")
@@ -728,6 +887,7 @@ async def cancel_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cancel_existing_timer(context)
     if update.message:
         await update.message.reply_text("❌ ትዕዛዙ ተሰርዟል።")
     context.user_data.clear()
@@ -751,6 +911,7 @@ def main() -> None:
             TRADE_TYPE: [CallbackQueryHandler(select_trade_type, pattern="^(trade_|bot_support)")],
             SUPPORT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), handle_support_msg)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), get_amount)],
+            BUY_PAYMENT_CHOICE: [CallbackQueryHandler(select_buy_payment, pattern="^pay_")],
             PAYMENT_CHOICE: [CallbackQueryHandler(payment_selected, pattern="^proceed_pay$")],
             SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
             WALLET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔄 Main Menu / Restart$"), receive_wallet)],
@@ -771,7 +932,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(proof_|approve_|reject_|reply_)"))
     app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), admin_media_handler))
 
-    logger.info("Bot started successfully...")
+    logger.info("Bot started successfully with AI OCR Verification...")
     app.run_polling()
 
 if __name__ == "__main__":
